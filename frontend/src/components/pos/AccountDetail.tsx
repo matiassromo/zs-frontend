@@ -17,7 +17,7 @@ import {
   Payment,
 } from "@/lib/api/accounts";
 
-// ✅ NUEVO: modal unificado create/edit
+// ✅ modal unificado create/edit
 import AccountFormModal from "@/components/pos/AccountFormModal";
 
 // ✅ llaves backend real
@@ -43,29 +43,18 @@ function formatKeyLabel(g: KeyGender, n: number) {
   return `${n}${g}`;
 }
 
-function computeKeyGenderAndNumber(orderedIndex: number): { gender: KeyGender; number: number } {
+function computeKeyGenderAndNumber(
+  orderedIndex: number
+): { gender: KeyGender; number: number } {
   const gender: KeyGender = orderedIndex < 16 ? "H" : "M";
   const number = gender === "H" ? orderedIndex + 1 : orderedIndex - 16 + 1;
   return { gender, number };
 }
 
-async function fetchAvailableKeysByGender(gender: KeyGender): Promise<number[]> {
-  const raw: Key[] = await listKeys();
-  const ordered = [...raw].sort((a, b) => a.id.localeCompare(b.id));
-
-  const free: number[] = [];
-  ordered.forEach((k, index) => {
-    const g = index < 16 ? "H" : "M";
-    if (g !== gender) return;
-
-    const num = g === "H" ? index + 1 : index - 16 + 1;
-    if (k.available) free.push(num);
-  });
-
-  return free.sort((a, b) => a - b);
-}
-
-async function findKeyEntityByGenderNumber(g: KeyGender, n: number): Promise<Key | null> {
+async function findKeyEntityByGenderNumber(
+  g: KeyGender,
+  n: number
+): Promise<Key | null> {
   const raw: Key[] = await listKeys();
   const ordered = [...raw].sort((a, b) => a.id.localeCompare(b.id));
 
@@ -119,7 +108,7 @@ export default function AccountDetail({
 
   const saldoColor = useMemo(() => {
     if (!summary) return "";
-    return summary.saldo > 0 ? "text-red-600" : "text-emerald-600";
+    return summary.saldo > 0 ? "text-rose-600" : "text-emerald-600";
   }, [summary]);
 
   function findChargePaidMethod(chargeId: string): PayMethod | null {
@@ -153,7 +142,6 @@ export default function AccountDetail({
     onChanged?.();
   }
 
-  // ✅ SOLO cerrar (sin imprimir)
   async function handleCloseAccount() {
     if (closing) return;
     setClosing(true);
@@ -166,7 +154,6 @@ export default function AccountDetail({
     }
   }
 
-  // ✅ imprimir siempre (abierta o cerrada)
   async function handlePrintReceipt() {
     if (printing) return;
     setPrinting(true);
@@ -177,10 +164,14 @@ export default function AccountDetail({
     }
   }
 
-  // ✅ agregar cargo libre (bar/extras)
-  async function handleAddExtraCharge(input: { concept: string; qty: number; amount: number }) {
+  async function handleAddExtraCharge(input: {
+    concept: string;
+    qty: number;
+    amount: number;
+  }) {
     if (!summary) return;
-    if (summary.status !== "Abierta") throw new Error("Solo puedes modificar cuentas abiertas.");
+    if (summary.status !== "Abierta")
+      throw new Error("Solo puedes modificar cuentas abiertas.");
 
     const concept = input.concept.trim();
     if (!concept) throw new Error("Concepto requerido.");
@@ -198,10 +189,14 @@ export default function AccountDetail({
     onChanged?.();
   }
 
-  // ✅ llaves: reservar + registrar evento como cargo (monto 0)
-  async function handleAddKey(input: { gender: KeyGender; number: number; clientName: string }) {
+  async function handleAddKey(input: {
+    gender: KeyGender;
+    number: number;
+    clientName: string;
+  }) {
     if (!summary) return;
-    if (summary.status !== "Abierta") throw new Error("Solo puedes modificar cuentas abiertas.");
+    if (summary.status !== "Abierta")
+      throw new Error("Solo puedes modificar cuentas abiertas.");
 
     const key = await findKeyEntityByGenderNumber(input.gender, input.number);
     if (!key) throw new Error("No se encontró esa llave.");
@@ -226,10 +221,14 @@ export default function AccountDetail({
     onChanged?.();
   }
 
-  // ✅ llaves: liberar + registrar evento como cargo (monto 0)
-  async function handleRemoveKey(input: { gender: KeyGender; number: number; clientName: string }) {
+  async function handleRemoveKey(input: {
+    gender: KeyGender;
+    number: number;
+    clientName: string;
+  }) {
     if (!summary) return;
-    if (summary.status !== "Abierta") throw new Error("Solo puedes modificar cuentas abiertas.");
+    if (summary.status !== "Abierta")
+      throw new Error("Solo puedes modificar cuentas abiertas.");
 
     const key = await findKeyEntityByGenderNumber(input.gender, input.number);
     if (!key) throw new Error("No se encontró esa llave.");
@@ -252,205 +251,249 @@ export default function AccountDetail({
     onChanged?.();
   }
 
-  if (loading) return <div className="mt-4">Cargando detalle…</div>;
+  if (loading) return <div className="mt-4 text-sm text-neutral-500">Cargando detalle…</div>;
   if (!summary) return null;
 
-  const selectedCharge = payChargeId ? charges.find((c) => c.id === payChargeId) ?? null : null;
+  const selectedCharge = payChargeId
+    ? charges.find((c) => c.id === payChargeId) ?? null
+    : null;
 
-  // ✅ Para no pelear con tipos si AccountSummary aún no trae estos campos
   const sAny: any = summary;
 
   return (
-    <div className="mt-6 grid gap-6">
-      {/* Resumen */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <div className="rounded-xl border bg-white p-4">
-          <div className="text-sm text-gray-500">Total cargos</div>
-          <div className="text-2xl font-semibold">${summary.totalCargos.toFixed(2)}</div>
+    // ✅ CLAVE: min-w-0 + overflow-hidden para cortar desbordes
+    <div className="min-w-0 overflow-hidden">
+      <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden">
+        {/* Header del panel */}
+        <div className="px-4 py-3 border-b border-neutral-200">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+            Detalle de cuenta
+          </div>
+          <div className="text-sm font-semibold text-neutral-900">
+            Cuenta #{summary.id}
+          </div>
         </div>
-        <div className="rounded-xl border bg-white p-4">
-          <div className="text-sm text-gray-500">Total pagos</div>
-          <div className="text-2xl font-semibold">${summary.totalPagos.toFixed(2)}</div>
-        </div>
-        <div className="rounded-xl border bg-white p-4">
-          <div className="text-sm text-gray-500">Saldo</div>
-          <div className={`text-2xl font-semibold ${saldoColor}`}>${summary.saldo.toFixed(2)}</div>
-        </div>
-      </div>
 
-      {/* Info cuenta + acciones */}
-      <div className="rounded-xl border bg-white p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-sm text-gray-500 mb-1">
-              Cuenta #{summary.id} · {summary.clientName}
-            </div>
-            <div className="text-sm">
-              <span className="font-medium">Estado:</span> {summary.status}
-            </div>
-            <div className="text-sm">
-              <span className="font-medium">Entrada:</span>{" "}
-              {new Date(summary.openedAt).toLocaleString("es-EC")}
-            </div>
-            {summary.closedAt && (
-              <div className="text-sm">
-                <span className="font-medium">Salida:</span>{" "}
-                {new Date(summary.closedAt).toLocaleString("es-EC")}
+        <div className="p-4 grid gap-4 min-w-0">
+          {/* Info + acciones */}
+          <div className="rounded-xl border border-neutral-200 bg-white p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div className="min-w-0">
+                <div className="text-sm text-neutral-600">
+                  Cuenta #{summary.id} ·{" "}
+                  <span className="font-medium text-neutral-900">
+                    {summary.clientName}
+                  </span>
+                </div>
+                <div className="mt-1 text-sm">
+                  <span className="font-medium">Estado:</span> {summary.status}
+                </div>
+                <div className="text-sm">
+                  <span className="font-medium">Entrada:</span>{" "}
+                  {new Date(summary.openedAt).toLocaleString("es-EC")}
+                </div>
+                {summary.closedAt && (
+                  <div className="text-sm">
+                    <span className="font-medium">Salida:</span>{" "}
+                    {new Date(summary.closedAt).toLocaleString("es-EC")}
+                  </div>
+                )}
               </div>
-            )}
+
+              {summary.status === "Abierta" && (
+                <div className="flex flex-wrap gap-2 justify-start md:justify-end">
+                  <button
+                    onClick={() => setEditFormOpen(true)}
+                    className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50"
+                  >
+                    Editar cuenta
+                  </button>
+                  <button
+                    onClick={() => setKeysOpen(true)}
+                    className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50"
+                  >
+                    Llaves
+                  </button>
+                  <button
+                    onClick={() => setAddChargeOpen(true)}
+                    className="inline-flex items-center justify-center rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700"
+                  >
+                    Agregar cargo
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
-          {summary.status === "Abierta" && (
-            <div className="flex flex-wrap gap-2 justify-end">
-              <button
-                onClick={() => setEditFormOpen(true)}
-                className="rounded-full border px-4 py-2 text-sm"
-              >
-                Editar cuenta
-              </button>
-              <button
-                onClick={() => setKeysOpen(true)}
-                className="rounded-full border px-4 py-2 text-sm"
-              >
-                Llaves
-              </button>
-              <button
-                onClick={() => setAddChargeOpen(true)}
-                className="rounded-full bg-indigo-600 text-white px-4 py-2 text-sm"
-              >
-                Agregar cargo
-              </button>
+          {/* Resumen */}
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-neutral-200 bg-white p-4">
+              <div className="text-xs font-medium text-neutral-500">Total cargos</div>
+              <div className="mt-1 text-2xl font-semibold text-neutral-900">
+                ${summary.totalCargos.toFixed(2)}
+              </div>
             </div>
-          )}
-        </div>
-      </div>
+            <div className="rounded-xl border border-neutral-200 bg-white p-4">
+              <div className="text-xs font-medium text-neutral-500">Total pagos</div>
+              <div className="mt-1 text-2xl font-semibold text-neutral-900">
+                ${summary.totalPagos.toFixed(2)}
+              </div>
+            </div>
+            <div className="rounded-xl border border-neutral-200 bg-white p-4">
+              <div className="text-xs font-medium text-neutral-500">Saldo</div>
+              <div className={`mt-1 text-2xl font-semibold ${saldoColor}`}>
+                ${summary.saldo.toFixed(2)}
+              </div>
+            </div>
+          </div>
 
-      {/* ✅ Acciones: CERRAR e IMPRIMIR separados (imprimir funciona aunque esté cerrada) */}
-      <div className="flex flex-wrap gap-2">
-        {summary.status === "Abierta" && (
-          <button
-            onClick={handleCloseAccount}
-            disabled={closing}
-            className={
-              "rounded-full px-4 py-2 text-white " +
-              (closing ? "bg-red-400 cursor-not-allowed" : "bg-red-600")
-            }
-          >
-            {closing ? "Cerrando…" : "Cerrar cuenta"}
-          </button>
-        )}
+          {/* Acciones */}
+          <div className="flex flex-wrap gap-2">
+            {summary.status === "Abierta" && (
+              <button
+                onClick={handleCloseAccount}
+                disabled={closing}
+                className={
+                  "inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-medium text-white " +
+                  (closing ? "bg-rose-400 cursor-not-allowed" : "bg-rose-600 hover:bg-rose-700")
+                }
+              >
+                {closing ? "Cerrando…" : "Cerrar cuenta"}
+              </button>
+            )}
 
-        <button
-          onClick={handlePrintReceipt}
-          disabled={printing}
-          className={
-            "rounded-full border px-4 py-2 " +
-            (printing ? "opacity-60 cursor-not-allowed" : "")
-          }
-        >
-          {printing ? "Imprimiendo…" : "Imprimir comprobante"}
-        </button>
-      </div>
+            <button
+              onClick={handlePrintReceipt}
+              disabled={printing}
+              className={
+                "inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium " +
+                (printing ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-50")
+              }
+            >
+              {printing ? "Imprimiendo…" : "Imprimir comprobante"}
+            </button>
+          </div>
 
-      {/* Cargos */}
-      <div className="rounded-xl border bg-white">
-        <div className="p-4 border-b font-semibold">Cargos</div>
-        <div className="p-2 overflow-x-auto">
-          <table className="min-w-[760px] w-full">
-            <thead>
-              <tr className="text-left text-sm text-gray-600">
-                <th className="py-2 px-3">Fecha</th>
-                <th className="py-2 px-3">Tipo</th>
-                <th className="py-2 px-3">Concepto</th>
-                <th className="py-2 px-3">Cant.</th>
-                <th className="py-2 px-3">Monto</th>
-                <th className="py-2 px-3">Total</th>
-                <th className="py-2 px-3">Estado</th>
-                <th className="py-2 px-3 text-right">Acción</th>
-              </tr>
-            </thead>
-            <tbody>
-              {charges.map((c) => {
-                const paidMethod = c.status === "Pagado" ? findChargePaidMethod(c.id) : null;
+          {/* Cargos */}
+          <div className="rounded-xl border border-neutral-200 bg-white overflow-hidden min-w-0">
+            <div className="px-4 py-3 border-b border-neutral-200 font-semibold">
+              Cargos
+            </div>
 
-                return (
-                  <tr key={c.id} className="border-t">
-                    <td className="py-2 px-3 text-sm">{new Date(c.createdAt).toLocaleString()}</td>
-                    <td className="py-2 px-3">{c.kind}</td>
-                    <td className="py-2 px-3">
-                      {c.kind === "Key" ? c.concept.replace(/\s*\(\s*1H\s*\)\s*$/i, "") : c.concept}
-                    </td>
-                    <td className="py-2 px-3">{c.qty}</td>
-                    <td className="py-2 px-3">${c.amount.toFixed(2)}</td>
-                    <td className="py-2 px-3 font-medium">${c.total.toFixed(2)}</td>
-                    <td className="py-2 px-3">
-                      {c.status === "Pagado" ? (
-                        <span className="px-2 py-1 rounded text-xs bg-emerald-100 text-emerald-700">
-                          {paidMethod ? `Pagado (${paidMethod})` : "Pagado"}
-                        </span>
-                      ) : (
-                        <span className="px-2 py-1 rounded text-xs bg-amber-100 text-amber-700">
-                          Pendiente
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {summary.status === "Abierta" && c.status === "Pendiente" ? (
-                        <button
-                          onClick={() => setPayChargeId(c.id)}
-                          className="text-sm rounded bg-emerald-600 text-white px-3 py-1"
-                        >
-                          Registrar pago
-                        </button>
-                      ) : (
-                        <span className="text-xs text-gray-400">—</span>
-                      )}
-                    </td>
+            {/* ✅ CLAVE: overflow-x-auto pero SIN min-w gigante obligatorio */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[680px]">
+                <thead className="bg-neutral-50">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                    <th className="py-3 px-3">Fecha</th>
+                    <th className="py-3 px-3">Tipo</th>
+                    <th className="py-3 px-3">Concepto</th>
+                    <th className="py-3 px-3">Cant.</th>
+                    <th className="py-3 px-3">Monto</th>
+                    <th className="py-3 px-3">Total</th>
+                    <th className="py-3 px-3">Estado</th>
+                    <th className="py-3 px-3 text-right">Acción</th>
                   </tr>
-                );
-              })}
+                </thead>
+                <tbody>
+                  {charges.map((c) => {
+                    const paidMethod =
+                      c.status === "Pagado" ? findChargePaidMethod(c.id) : null;
 
-              {charges.length === 0 && (
-                <tr>
-                  <td className="py-4 px-3 text-gray-500" colSpan={8}>
-                    Sin cargos registrados.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                    return (
+                      <tr key={c.id} className="border-t border-neutral-200">
+                        <td className="py-3 px-3 whitespace-nowrap">
+                          {new Date(c.createdAt).toLocaleString("es-EC")}
+                        </td>
+                        <td className="py-3 px-3">{c.kind}</td>
+                        <td className="py-3 px-3">
+                          {c.kind === "Key"
+                            ? c.concept.replace(/\s*\(\s*1H\s*\)\s*$/i, "")
+                            : c.concept}
+                        </td>
+                        <td className="py-3 px-3">{c.qty}</td>
+                        <td className="py-3 px-3">${c.amount.toFixed(2)}</td>
+                        <td className="py-3 px-3 font-semibold">
+                          ${c.total.toFixed(2)}
+                        </td>
+                        <td className="py-3 px-3">
+                          {c.status === "Pagado" ? (
+                            <span className="inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800">
+                              {paidMethod ? `Pagado (${paidMethod})` : "Pagado"}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800">
+                              Pendiente
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          {summary.status === "Abierta" && c.status === "Pendiente" ? (
+                            <button
+                              onClick={() => setPayChargeId(c.id)}
+                              className="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700"
+                            >
+                              Registrar pago
+                            </button>
+                          ) : (
+                            <span className="text-xs text-neutral-400">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
 
-      {/* Pagos */}
-      <div className="rounded-xl border bg-white">
-        <div className="p-4 border-b font-semibold">Pagos</div>
-        <div className="p-2 overflow-x-auto">
-          <table className="min-w-[560px] w-full">
-            <thead>
-              <tr className="text-left text-sm text-gray-600">
-                <th className="py-2 px-3">Fecha</th>
-                <th className="py-2 px-3">Método</th>
-                <th className="py-2 px-3">Monto</th>
-              </tr>
-            </thead>
-            <tbody>
-              {payments.map((p) => (
-                <tr key={p.id} className="border-t">
-                  <td className="py-2 px-3 text-sm">{new Date(p.createdAt).toLocaleString()}</td>
-                  <td className="py-2 px-3">{(p as any).method}</td>
-                  <td className="py-2 px-3 font-medium">${p.amount.toFixed(2)}</td>
-                </tr>
-              ))}
-              {payments.length === 0 && (
-                <tr>
-                  <td className="py-4 px-3 text-gray-500" colSpan={3}>
-                    Sin pagos registrados.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+                  {charges.length === 0 && (
+                    <tr>
+                      <td className="py-6 px-3 text-neutral-500" colSpan={8}>
+                        Sin cargos registrados.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Pagos */}
+          <div className="rounded-xl border border-neutral-200 bg-white overflow-hidden min-w-0">
+            <div className="px-4 py-3 border-b border-neutral-200 font-semibold">
+              Pagos
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[520px]">
+                <thead className="bg-neutral-50">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                    <th className="py-3 px-3">Fecha</th>
+                    <th className="py-3 px-3">Método</th>
+                    <th className="py-3 px-3">Monto</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payments.map((p) => (
+                    <tr key={p.id} className="border-t border-neutral-200">
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        {new Date(p.createdAt).toLocaleString("es-EC")}
+                      </td>
+                      <td className="py-3 px-3">{(p as any).method}</td>
+                      <td className="py-3 px-3 font-semibold">
+                        ${p.amount.toFixed(2)}
+                      </td>
+                    </tr>
+                  ))}
+
+                  {payments.length === 0 && (
+                    <tr>
+                      <td className="py-6 px-3 text-neutral-500" colSpan={3}>
+                        Sin pagos registrados.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -459,11 +502,13 @@ export default function AccountDetail({
         <PayChargeModal
           charge={selectedCharge}
           onCancel={() => setPayChargeId(null)}
-          onConfirm={(method) => handlePayCharge({ chargeId: selectedCharge.id, method })}
+          onConfirm={(method) =>
+            handlePayCharge({ chargeId: selectedCharge.id, method })
+          }
         />
       )}
 
-      {/* ✅ Modal editar cuenta: mismo formulario que crear */}
+      {/* Modal editar cuenta */}
       {editFormOpen && (
         <AccountFormModal
           mode="edit"
@@ -474,7 +519,10 @@ export default function AccountDetail({
             gender: sAny.gender ?? "M",
             requiresParking: sAny.requiresParking ?? false,
             people: sAny.people ?? { adult: 0, child: 0, te: 0, dis: 0, ac: 0 },
-            keys: (sAny.keys ?? []).map((k: any) => ({ gender: k.gender, number: k.number })),
+            keys: (sAny.keys ?? []).map((k: any) => ({
+              gender: k.gender,
+              number: k.number,
+            })),
           }}
           onCancel={() => setEditFormOpen(false)}
           onSubmit={async (payload) => {
@@ -506,7 +554,7 @@ export default function AccountDetail({
         />
       )}
 
-      {/* Modal llaves (acción rápida aparte) */}
+      {/* Modal llaves */}
       {keysOpen && (
         <KeysModal
           currentClientName={summary.clientName}
@@ -534,16 +582,16 @@ function PayChargeModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-md rounded-2xl border bg-white shadow-xl">
-        <div className="p-4 border-b flex items-center justify-between">
+      <div className="w-full max-w-md rounded-2xl border border-neutral-200 bg-white shadow-xl overflow-hidden">
+        <div className="p-4 border-b border-neutral-200 flex items-center justify-between">
           <div className="font-semibold">Registrar pago</div>
-          <button onClick={onCancel} className="text-sm px-2 py-1 rounded border">
-            X
+          <button onClick={onCancel} className="text-sm px-3 py-1 rounded-lg border">
+            Cerrar
           </button>
         </div>
 
         <div className="p-4">
-          <div className="text-sm text-gray-600">
+          <div className="text-sm text-neutral-700">
             <div className="mb-1">
               <span className="font-medium">Concepto:</span> {charge.concept}
             </div>
@@ -556,10 +604,10 @@ function PayChargeModal({
             <button
               onClick={() => setMethod("Efectivo")}
               className={
-                "px-4 py-3 rounded-xl border text-sm font-medium " +
+                "px-4 py-3 rounded-xl border text-sm font-semibold " +
                 (method === "Efectivo"
-                  ? "bg-slate-900 text-white border-slate-900"
-                  : "bg-white")
+                  ? "bg-neutral-900 text-white border-neutral-900"
+                  : "bg-white border-neutral-200 hover:bg-neutral-50")
               }
             >
               Efectivo
@@ -568,10 +616,10 @@ function PayChargeModal({
             <button
               onClick={() => setMethod("Transferencia")}
               className={
-                "px-4 py-3 rounded-xl border text-sm font-medium " +
+                "px-4 py-3 rounded-xl border text-sm font-semibold " +
                 (method === "Transferencia"
-                  ? "bg-slate-900 text-white border-slate-900"
-                  : "bg-white")
+                  ? "bg-neutral-900 text-white border-neutral-900"
+                  : "bg-white border-neutral-200 hover:bg-neutral-50")
               }
             >
               Transferencia
@@ -579,13 +627,13 @@ function PayChargeModal({
           </div>
         </div>
 
-        <div className="p-4 border-t flex justify-end gap-2">
-          <button onClick={onCancel} className="px-4 py-2 rounded-xl border">
+        <div className="p-4 border-t border-neutral-200 flex justify-end gap-2">
+          <button onClick={onCancel} className="px-4 py-2 rounded-xl border border-neutral-200">
             Cancelar
           </button>
           <button
             onClick={() => onConfirm(method)}
-            className="px-4 py-2 rounded-xl bg-emerald-600 text-white"
+            className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700"
           >
             Confirmar pago
           </button>
@@ -645,11 +693,11 @@ function AddChargeModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-2xl rounded-2xl border bg-white shadow-xl">
-        <div className="p-4 border-b flex items-center justify-between">
+      <div className="w-full max-w-2xl rounded-2xl border border-neutral-200 bg-white shadow-xl overflow-hidden">
+        <div className="p-4 border-b border-neutral-200 flex items-center justify-between">
           <div className="font-semibold">Agregar cargo</div>
-          <button onClick={onCancel} className="text-sm px-2 py-1 rounded border">
-            X
+          <button onClick={onCancel} className="text-sm px-3 py-1 rounded-lg border">
+            Cerrar
           </button>
         </div>
 
@@ -658,8 +706,10 @@ function AddChargeModal({
             <button
               onClick={() => setTab("bar")}
               className={
-                "px-3 py-2 rounded-full border text-sm " +
-                (tab === "bar" ? "bg-slate-900 text-white border-slate-900" : "")
+                "px-3 py-2 rounded-full border text-sm font-semibold " +
+                (tab === "bar"
+                  ? "bg-neutral-900 text-white border-neutral-900"
+                  : "border-neutral-200 hover:bg-neutral-50")
               }
             >
               Bar
@@ -667,8 +717,10 @@ function AddChargeModal({
             <button
               onClick={() => setTab("manual")}
               className={
-                "px-3 py-2 rounded-full border text-sm " +
-                (tab === "manual" ? "bg-slate-900 text-white border-slate-900" : "")
+                "px-3 py-2 rounded-full border text-sm font-semibold " +
+                (tab === "manual"
+                  ? "bg-neutral-900 text-white border-neutral-900"
+                  : "border-neutral-200 hover:bg-neutral-50")
               }
             >
               Manual
@@ -678,16 +730,16 @@ function AddChargeModal({
           {tab === "bar" ? (
             <div className="grid gap-3">
               {loading ? (
-                <div className="text-sm text-gray-500">Cargando productos…</div>
+                <div className="text-sm text-neutral-500">Cargando productos…</div>
               ) : products.length === 0 ? (
-                <div className="text-sm text-gray-500">No hay productos de bar.</div>
+                <div className="text-sm text-neutral-500">No hay productos de bar.</div>
               ) : (
                 <>
                   <div className="grid sm:grid-cols-3 gap-3 items-end">
                     <div className="sm:col-span-2">
                       <div className="text-sm font-medium">Buscar</div>
                       <input
-                        className="border rounded px-3 py-2 w-full mt-1"
+                        className="border border-neutral-200 rounded-xl px-3 py-2 w-full mt-1"
                         value={q}
                         onChange={(e) => setQ(e.target.value)}
                         placeholder="salchi, agua, cerveza…"
@@ -699,33 +751,41 @@ function AddChargeModal({
                       <input
                         type="number"
                         min={1}
-                        className="border rounded px-3 py-2 w-full mt-1"
+                        className="border border-neutral-200 rounded-xl px-3 py-2 w-full mt-1"
                         value={qty}
-                        onChange={(e) => setQty(Math.max(1, parseInt(e.target.value || "1", 10)))}
+                        onChange={(e) =>
+                          setQty(Math.max(1, parseInt(e.target.value || "1", 10)))
+                        }
                       />
                     </div>
                   </div>
 
-                  <div className="border rounded max-h-56 overflow-auto">
+                  <div className="border border-neutral-200 rounded-xl max-h-56 overflow-auto">
                     {filtered.map((p) => (
                       <button
                         key={p.id}
                         onClick={() => setSelectedId(p.id)}
                         className={
-                          "w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-gray-50 " +
+                          "w-full text-left px-3 py-2 border-b border-neutral-200 last:border-b-0 hover:bg-neutral-50 " +
                           (p.id === selectedId ? "bg-emerald-50" : "")
                         }
                         type="button"
                       >
-                        <div className="text-sm font-medium">{p.name}</div>
-                        <div className="text-xs text-gray-500">${p.unitPrice.toFixed(2)}</div>
+                        <div className="text-sm font-semibold">{p.name}</div>
+                        <div className="text-xs text-neutral-500">
+                          ${p.unitPrice.toFixed(2)}
+                        </div>
                       </button>
                     ))}
                   </div>
 
-                  <div className="text-sm text-gray-600">
-                    Seleccionado: <span className="font-medium">{selected?.name ?? "—"}</span> ·
-                    Unit: <span className="font-medium">${(selected?.unitPrice ?? 0).toFixed(2)}</span>
+                  <div className="text-sm text-neutral-700">
+                    Seleccionado:{" "}
+                    <span className="font-semibold">{selected?.name ?? "—"}</span>{" "}
+                    · Unit:{" "}
+                    <span className="font-semibold">
+                      ${(selected?.unitPrice ?? 0).toFixed(2)}
+                    </span>
                   </div>
                 </>
               )}
@@ -735,7 +795,7 @@ function AddChargeModal({
               <div className="sm:col-span-2">
                 <div className="text-sm font-medium">Concepto</div>
                 <input
-                  className="border rounded px-3 py-2 w-full mt-1"
+                  className="border border-neutral-200 rounded-xl px-3 py-2 w-full mt-1"
                   value={concept}
                   onChange={(e) => setConcept(e.target.value)}
                   placeholder="Salchipapa, Nevado, etc."
@@ -746,7 +806,7 @@ function AddChargeModal({
                 <input
                   type="number"
                   step="0.01"
-                  className="border rounded px-3 py-2 w-full mt-1"
+                  className="border border-neutral-200 rounded-xl px-3 py-2 w-full mt-1"
                   value={amount}
                   onChange={(e) => setAmount(parseFloat(e.target.value || "0"))}
                 />
@@ -757,17 +817,19 @@ function AddChargeModal({
                 <input
                   type="number"
                   min={1}
-                  className="border rounded px-3 py-2 w-full mt-1"
+                  className="border border-neutral-200 rounded-xl px-3 py-2 w-full mt-1"
                   value={qty}
-                  onChange={(e) => setQty(Math.max(1, parseInt(e.target.value || "1", 10)))}
+                  onChange={(e) =>
+                    setQty(Math.max(1, parseInt(e.target.value || "1", 10)))
+                  }
                 />
               </div>
             </div>
           )}
         </div>
 
-        <div className="p-4 border-t flex justify-end gap-2">
-          <button onClick={onCancel} className="px-4 py-2 rounded-xl border">
+        <div className="p-4 border-t border-neutral-200 flex justify-end gap-2">
+          <button onClick={onCancel} className="px-4 py-2 rounded-xl border border-neutral-200">
             Cancelar
           </button>
           <button
@@ -783,7 +845,7 @@ function AddChargeModal({
               }
               onAdd({ concept, qty, amount });
             }}
-            className="px-4 py-2 rounded-xl bg-emerald-600 text-white"
+            className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-60"
             disabled={tab === "bar" ? !selected : !concept.trim() || !Number.isFinite(amount)}
           >
             Agregar
@@ -847,11 +909,11 @@ function KeysModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-2xl rounded-2xl border bg-white shadow-xl">
-        <div className="p-4 border-b flex items-center justify-between">
+      <div className="w-full max-w-2xl rounded-2xl border border-neutral-200 bg-white shadow-xl overflow-hidden">
+        <div className="p-4 border-b border-neutral-200 flex items-center justify-between">
           <div className="font-semibold">Gestión de llaves</div>
-          <button onClick={onCancel} className="text-sm px-2 py-1 rounded border">
-            X
+          <button onClick={onCancel} className="text-sm px-3 py-1 rounded-lg border">
+            Cerrar
           </button>
         </div>
 
@@ -860,8 +922,10 @@ function KeysModal({
             <button
               onClick={() => setGender("H")}
               className={
-                "px-3 py-2 rounded-full border text-sm " +
-                (gender === "H" ? "bg-slate-900 text-white border-slate-900" : "")
+                "px-3 py-2 rounded-full border text-sm font-semibold " +
+                (gender === "H"
+                  ? "bg-neutral-900 text-white border-neutral-900"
+                  : "border-neutral-200 hover:bg-neutral-50")
               }
             >
               Hombres
@@ -869,8 +933,10 @@ function KeysModal({
             <button
               onClick={() => setGender("M")}
               className={
-                "px-3 py-2 rounded-full border text-sm " +
-                (gender === "M" ? "bg-slate-900 text-white border-slate-900" : "")
+                "px-3 py-2 rounded-full border text-sm font-semibold " +
+                (gender === "M"
+                  ? "bg-neutral-900 text-white border-neutral-900"
+                  : "border-neutral-200 hover:bg-neutral-50")
               }
             >
               Mujeres
@@ -878,19 +944,19 @@ function KeysModal({
           </div>
 
           {loading ? (
-            <div className="text-sm text-gray-500">Cargando llaves…</div>
+            <div className="text-sm text-neutral-500">Cargando llaves…</div>
           ) : (
             <div className="grid md:grid-cols-2 gap-4">
-              <div className="rounded-xl border p-3">
+              <div className="rounded-xl border border-neutral-200 p-3">
                 <div className="font-semibold text-sm mb-2">Disponibles</div>
                 <div className="flex flex-wrap gap-2">
                   {free.length === 0 && (
-                    <span className="text-xs text-gray-500">No hay llaves libres</span>
+                    <span className="text-xs text-neutral-500">No hay llaves libres</span>
                   )}
                   {free.map((n) => (
                     <button
                       key={`free-${gender}-${n}`}
-                      className="px-3 py-1 rounded-full border text-sm hover:bg-emerald-50"
+                      className="px-3 py-2 rounded-full border border-neutral-200 text-sm hover:bg-emerald-50"
                       onClick={async () => {
                         await onAddKey({ gender, number: n, clientName: currentClientName });
                         await reload();
@@ -903,16 +969,16 @@ function KeysModal({
                 </div>
               </div>
 
-              <div className="rounded-xl border p-3">
+              <div className="rounded-xl border border-neutral-200 p-3">
                 <div className="font-semibold text-sm mb-2">Ocupadas</div>
                 <div className="flex flex-wrap gap-2">
                   {busy.length === 0 && (
-                    <span className="text-xs text-gray-500">No hay llaves ocupadas</span>
+                    <span className="text-xs text-neutral-500">No hay llaves ocupadas</span>
                   )}
                   {busy.map((n) => (
                     <button
                       key={`busy-${gender}-${n}`}
-                      className="px-3 py-1 rounded-full border text-sm hover:bg-amber-50"
+                      className="px-3 py-2 rounded-full border border-neutral-200 text-sm hover:bg-amber-50"
                       onClick={async () => {
                         await onRemoveKey({ gender, number: n, clientName: currentClientName });
                         await reload();
@@ -923,7 +989,7 @@ function KeysModal({
                     </button>
                   ))}
                 </div>
-                <div className="mt-2 text-xs text-gray-500">
+                <div className="mt-2 text-xs text-neutral-500">
                   Este modal libera/asigna llaves en inventario y registra el evento como cargo (monto 0).
                 </div>
               </div>
@@ -931,8 +997,8 @@ function KeysModal({
           )}
         </div>
 
-        <div className="p-4 border-t flex justify-end">
-          <button onClick={onCancel} className="px-4 py-2 rounded-xl border">
+        <div className="p-4 border-t border-neutral-200 flex justify-end">
+          <button onClick={onCancel} className="px-4 py-2 rounded-xl border border-neutral-200">
             Cerrar
           </button>
         </div>

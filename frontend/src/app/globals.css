@@ -139,3 +139,27 @@ body.swal2-shown .swal2-container {
 ::-webkit-scrollbar-thumb:hover {
   background-color: #737373;
 }
+
+/* ================================
+   Ajustes globales de UI (POS)
+   ================================ */
+
+/* Tipografía y base más compacta */
+html {
+  font-size: 15px; /* antes 16px; esto elimina la necesidad de bajar zoom */
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, "Helvetica Neue",
+    "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
+}
+
+/* Fondo app más “dashboard” */
+body {
+  background: #f8fafc; /* slate-50 */
+}
+
+/* Bordes un poco más suaves por defecto (opcional) */
+* {
+  border-color: rgba(15, 23, 42, 0.12); /* slate-900/12 */
+}

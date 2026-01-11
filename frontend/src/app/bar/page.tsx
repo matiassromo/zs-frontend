@@ -132,8 +132,6 @@ export default function BarPage() {
 
   return (
     <div className="p-8 space-y-8">
-      <h1 className="text-2xl font-semibold">Bar</h1>
-
       {/* ==================== PRODUCTOS ==================== */}
       <section className="bg-white rounded-xl shadow p-6 space-y-4">
         <h2 className="text-lg font-semibold">Productos (alimentos/bebidas)</h2>

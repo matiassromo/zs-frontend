@@ -1,17 +1,18 @@
-"use client"
+// src/components/shell/Sidebar.tsx
+"use client";
 
-import Link from "next/link"
-import { usePathname } from "next/navigation"
-import { useMemo, useState } from "react"
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 
 type NavItem =
   | { type: "link"; href: string; label: string }
   | {
-      type: "group"
-      label: string
-      id: "facturacion" | string
-      children: { href: string; label: string }[]
-    }
+      type: "group";
+      label: string;
+      id: "facturacion" | string;
+      children: { href: string; label: string }[];
+    };
 
 const items: NavItem[] = [
   { type: "link", href: "/", label: "Dashboard" },
@@ -26,28 +27,26 @@ const items: NavItem[] = [
   },
   { type: "link", href: "/clientes", label: "Clientes" },
   { type: "link", href: "/pases", label: "Tarjetas 10 Pases" },
-  { type: "link", href: "/tarjetas-pases", label: "Tarjetas y Pases" },
   { type: "link", href: "/bar", label: "Bar" },
   { type: "link", href: "/parqueadero", label: "Parqueadero" },
-  { type: "link", href: "/llaves", label: "Llaves" },
-  { type: "link", href: "/lockers", label: "Lockers" },
-  { type: "link", href: "/productos", label: "Productos" },
-  { type: "link", href: "/ingresos", label: "Ingresos" },
-  { type: "link", href: "/pagos", label: "Pagos" },
-  { type: "link", href: "/transacciones", label: "Transacciones" },
-]
+  { type: "link", href: "/llaves", label: "Lockers" },
+];
 
 export default function Sidebar() {
-  const pathname = usePathname()
+  const pathname = usePathname();
 
   // abrir por defecto si estoy en una subruta de facturación
   const defaultOpen = useMemo(
-    () =>
-      pathname.startsWith("/facturacion") ||
-      pathname === "/pos" /* compat temporal si alguien entra por /pos */,
+    () => pathname.startsWith("/facturacion") || pathname === "/pos",
     [pathname]
-  )
-  const [openFacturacion, setOpenFacturacion] = useState(defaultOpen)
+  );
+
+  const [openFacturacion, setOpenFacturacion] = useState(false);
+
+  // ✅ CLAVE: mantener el grupo sincronizado con la ruta actual
+  useEffect(() => {
+    setOpenFacturacion(defaultOpen);
+  }, [defaultOpen]);
 
   return (
     <div className="h-full p-4 flex flex-col gap-4">
@@ -91,7 +90,7 @@ export default function Sidebar() {
       <nav className="mt-2 flex flex-col gap-1">
         {items.map((it) => {
           if (it.type === "link") {
-            const active = pathname === it.href
+            const active = pathname === it.href;
             return (
               <Link
                 key={it.href}
@@ -104,12 +103,12 @@ export default function Sidebar() {
               >
                 <span>{it.label}</span>
               </Link>
-            )
+            );
           }
 
           // grupo: Facturación
           const isGroupActive =
-            pathname.startsWith("/facturacion") || pathname === "/pos"
+            pathname.startsWith("/facturacion") || pathname === "/pos";
 
           return (
             <div key={it.id} className="select-none">
@@ -133,7 +132,7 @@ export default function Sidebar() {
               {openFacturacion && (
                 <div className="mt-1 ml-2 flex flex-col gap-1 border-l border-neutral-200 pl-2">
                   {it.children.map((c) => {
-                    const active = pathname === c.href
+                    const active = pathname === c.href;
                     return (
                       <Link
                         key={c.href}
@@ -146,14 +145,14 @@ export default function Sidebar() {
                       >
                         {c.label}
                       </Link>
-                    )
+                    );
                   })}
                 </div>
               )}
             </div>
-          )
+          );
         })}
       </nav>
     </div>
-  )
+  );
 }

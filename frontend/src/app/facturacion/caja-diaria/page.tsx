@@ -89,7 +89,6 @@ export default function CajaDiariaPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="text-2xl font-semibold">Caja Diaria</div>
 
           <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-500">
             <span>
