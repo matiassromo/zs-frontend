@@ -7,17 +7,35 @@ import { useEffect, useMemo, useState } from "react";
 import { listClients, createClient } from "@/lib/api/clients";
 import type { Client } from "@/types/client";
 
-// ✅ llaves backend real
-import { listKeys, updateKey } from "@/lib/apiv2/keys";
+// 🔽 llaves backend real
+import { listKeys } from "@/lib/apiv2/keys";
 import type { Key } from "@/types/key";
 
-// ✅ tipos POS
-import type { PosEntryType, SelectedKey, KeyGender as UiKeyGender } from "@/types/pos";
+// ✅ POS types
+import type { SelectedKey, KeyGender } from "@/types/pos";
 
-// ✅ Ajusta estos 2 valores a los que EXISTEN en tu src/types/pos.ts
-const ENTRY_NORMAL = "normal" as PosEntryType;
-const ENTRY_PASS10 = "tarjeta10" as PosEntryType; // <- CAMBIA a tu valor real
+// ✅ Tarjetas 10 pases (módulo real) — MISMO FLUJO QUE CREATE
+import {
+  findAccessCardByHolder,
+  createAccessCardForHolder,
+  consumeAccessCardByHolder,
+} from "@/lib/apiv2/accessCards";
 
+type Mode = "create" | "edit";
+type Duration = "1H" | "8H" | "2M";
+
+/**
+ * Ajusta si tus precios viven en otro lado.
+ * Mantengo los mismos valores del CreateAccountModal.
+ */
+const PRICES_LOCAL = {
+  A: 7,
+  N: 4,
+  TE: 5,
+  D: 5,
+  AC: 1,
+  PASS: 55,
+};
 
 function norm(s: string) {
   return (s ?? "")
@@ -27,42 +45,21 @@ function norm(s: string) {
     .trim();
 }
 
-type Mode = "create" | "edit";
-type PayGender = "M" | "F";
-type KeyGender = "H" | "M";
-
-function formatMoney(n: number) {
-  const x = Number.isFinite(n) ? n : 0;
-  return `$${x.toFixed(2)}`;
+function matchesPrefixAnyWord(fullName: string, q: string) {
+  const nq = norm(q);
+  if (!nq) return true;
+  const words = norm(fullName).split(/\s+/).filter(Boolean);
+  return words.some((w) => w.startsWith(nq));
 }
 
-/**
- * Si tu proyecto tiene PRICES en otro path, ajusta este import/const.
- * Estos son los que se ven en tu modal (Adulto 7, Niño 4, TE 5, D 5, AC 1).
- */
-const DEFAULT_PRICES = {
-  adult: 7,
-  child: 4,
-  te: 5,
-  dis: 5,
-  ac: 1,
-  passSale: 55, // Tarjeta 10 pases (venta)
-  parkingRateLabel: "0.50 la hora o fracción",
-};
-
-function computeKeyGenderAndNumber(orderedIndex: number): { gender: KeyGender; number: number } {
-  const gender: KeyGender = orderedIndex < 16 ? "H" : "M";
-  const number = gender === "H" ? orderedIndex + 1 : orderedIndex - 16 + 1;
-  return { gender, number };
-}
-
+/* --------- HELPERS PARA LLAVES (api/Keys) --------- */
 async function fetchAvailableKeysByGender(gender: KeyGender): Promise<number[]> {
   const raw: Key[] = await listKeys();
   const ordered = [...raw].sort((a, b) => a.id.localeCompare(b.id));
 
   const free: number[] = [];
   ordered.forEach((k, index) => {
-    const g = index < 16 ? "H" : "M";
+    const g: KeyGender = index < 16 ? "H" : "M";
     if (g !== gender) return;
 
     const num = g === "H" ? index + 1 : index - 16 + 1;
@@ -72,60 +69,90 @@ async function fetchAvailableKeysByGender(gender: KeyGender): Promise<number[]> 
   return free.sort((a, b) => a - b);
 }
 
-async function findKeyEntityByGenderNumber(g: KeyGender, n: number): Promise<Key | null> {
-  const raw: Key[] = await listKeys();
-  const ordered = [...raw].sort((a, b) => a.id.localeCompare(b.id));
-
-  for (let idx = 0; idx < ordered.length; idx++) {
-    const { gender, number } = computeKeyGenderAndNumber(idx);
-    if (gender === g && number === n) return ordered[idx];
-  }
-  return null;
-}
-
-export type AccountFormPeople = {
-  adult: number;
-  child: number;
-  te: number;
-  dis: number;
-  ac: number;
+/* --------- Tarjeta 10 pases ---------- */
+type AccessCardState = {
+  loading: boolean;
+  exists: boolean;
+  cardId: string | null;
+  remaining: number;
+  willCreateIfMissing: boolean;
+  createdNow: boolean;
+  error: string | null;
 };
 
-export type AccountFormKey = { gender: KeyGender; number: number };
+const emptyCardState: AccessCardState = {
+  loading: false,
+  exists: false,
+  cardId: null,
+  remaining: 0,
+  willCreateIfMissing: false,
+  createdNow: false,
+  error: null,
+};
 
+function remainingFromFound(found: { card: any; remaining?: any } | null | undefined): number {
+  const uses = Number(found?.card?.uses);
+  if (Number.isFinite(uses)) return uses;
+  const fallback = Number(found?.remaining);
+  return Number.isFinite(fallback) ? fallback : 0;
+}
+
+/* --------- API payloads para este modal ---------- */
 export type AccountFormInitial = {
+  // cliente
   clientId?: string | null;
   clientName?: string | null;
 
-  entryType?: PosEntryType; // "Normal" | "Tarjeta 10 pases"
-  gender?: PayGender; // género cliente (para otras reglas)
+  // entradas normales (A/N/TE/D/AC)
+  counts?: Partial<{ A: number; N: number; TE: number; D: number; AC: number }>;
+
+  // tarjeta 10 pases (se puede combinar con normal)
+  usePassCard?: boolean;
+  passPeople?: number;
+
+  // llaves
+  keys?: Array<{ keyId?: string; gender: KeyGender; number: number; duration?: Duration }>;
+
+  // parking
   requiresParking?: boolean;
-
-  people?: Partial<AccountFormPeople>;
-
-  // llaves que "ya tiene" la cuenta en edición
-  keys?: AccountFormKey[];
 };
 
 export type AccountFormSubmit = {
-  // cliente final
   clientId: string;
   clientName: string;
 
-  entryType: PosEntryType;
-  gender: PayGender;
+  counts: { A: number; N: number; TE: number; D: number; AC: number };
+
+  // Tarjeta 10 pases
+  usePassCard: boolean;
+  passPeople: number;
+  cardState: AccessCardState; // por si quieres auditar/mostrar
+
+  // Llaves
+  keyGender: KeyGender;
+  selectedKeys: Array<{ keyId: string; gender: KeyGender; number: number; duration: Duration }>;
+  duration: Duration;
+
+  // Parking
   requiresParking: boolean;
 
-  people: AccountFormPeople;
-
-  // llaves que deben quedar asignadas al guardar
-  keys: AccountFormKey[];
-
-  // Totales ya calculados (opcional, útil para auditoría)
+  // Totales
   totals: {
     entriesSubtotal: number;
     passSale: number;
-    grandTotal: number;
+    totalPeople: number;
+    total: number;
+  };
+
+  /**
+   * Instrucciones para el padre: en EDIT
+   * - shouldConsumePasses: si true, consumeAccessCardByHolder(holderName, passPeople)
+   * - shouldChargePassSale: si true, agrega charge $55
+   */
+  passOps: {
+    shouldConsumePasses: boolean;
+    shouldChargePassSale: boolean;
+    remainingToValidate: number;
   };
 };
 
@@ -140,363 +167,562 @@ export default function AccountFormModal({
   onCancel: () => void;
   onSubmit: (payload: AccountFormSubmit) => Promise<void> | void;
 }) {
-  // -------------------- CLIENTE --------------------
-  const [clients, setClients] = useState<Client[]>([]);
-  const [clientQ, setClientQ] = useState("");
-  const [selectedClientId, setSelectedClientId] = useState<string>("");
-  const [clientName, setClientName] = useState("");
+  // ============== CLIENTE (MISMO UX QUE CREATE) ==============
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Client[]>([]);
+  const [allClients, setAllClients] = useState<Client[]>([]);
+  const [client, setClient] = useState<Client | null>(null);
 
-  const [loadingClients, setLoadingClients] = useState(false);
+  // ============== ENTRADAS NORMAL ==============
+  const [counts, setCounts] = useState<{ A: number; N: number; TE: number; D: number; AC: number }>(() => ({
+    A: Math.max(0, initial?.counts?.A ?? 0),
+    N: Math.max(0, initial?.counts?.N ?? 0),
+    TE: Math.max(0, initial?.counts?.TE ?? 0),
+    D: Math.max(0, initial?.counts?.D ?? 0),
+    AC: Math.max(0, initial?.counts?.AC ?? 0),
+  }));
 
-  // -------------------- FORM --------------------
-  const [entryType, setEntryType] = useState<PosEntryType>(() => initial?.entryType ?? ENTRY_NORMAL);
-  const [gender, setGender] = useState<PayGender>(initial?.gender ?? "M");
+  // ============== TARJETA 10 PASES (MISMO UX QUE CREATE) ==============
+  const [usePassCard, setUsePassCard] = useState<boolean>(!!initial?.usePassCard);
+  const [passPeople, setPassPeople] = useState<number>(Math.max(0, initial?.passPeople ?? 0));
+  const [cardState, setCardState] = useState<AccessCardState>(emptyCardState);
+
+  // ============== LLAVES ==============
+  const [keyGender, setKeyGender] = useState<KeyGender>(() => {
+    const k = initial?.keys?.[0];
+    return (k?.gender as KeyGender) ?? "H";
+  });
+  const [availableKeys, setAvailableKeys] = useState<number[]>([]);
+  const [selectedKeys, setSelectedKeys] = useState<Array<{ keyId: string; gender: KeyGender; number: number; duration: Duration }>>(() => {
+    const duration: Duration = "1H";
+    const inKeys = initial?.keys ?? [];
+    return inKeys.map((k) => ({
+      keyId: k.keyId ?? `${k.gender}-${k.number}`,
+      gender: k.gender,
+      number: k.number,
+      duration: (k.duration as Duration) ?? duration,
+    }));
+  });
+
+  const duration: Duration = "1H";
+
+  // ============== PARKING ==============
   const [requiresParking, setRequiresParking] = useState<boolean>(!!initial?.requiresParking);
 
-  const [people, setPeople] = useState<AccountFormPeople>({
-    adult: Math.max(0, initial?.people?.adult ?? 0),
-    child: Math.max(0, initial?.people?.child ?? 0),
-    te: Math.max(0, initial?.people?.te ?? 0),
-    dis: Math.max(0, initial?.people?.dis ?? 0),
-    ac: Math.max(0, initial?.people?.ac ?? 0),
-  });
-
-  // -------------------- LLAVES --------------------
-  const [keyGender, setKeyGender] = useState<KeyGender>(() => {
-    // si ya tiene llaves en edición, usar el género de la primera
-    const k = initial?.keys?.[0];
-    return k?.gender ?? "H";
-  });
-
-  const [availableKeys, setAvailableKeys] = useState<number[]>([]);
-  const [loadingKeys, setLoadingKeys] = useState(false);
-
-  const [selectedKeys, setSelectedKeys] = useState<AccountFormKey[]>(initial?.keys ?? []);
-
-  // -------------------- SUBMIT --------------------
+  // ============== UI STATE ==============
   const [saving, setSaving] = useState(false);
-  const PRICES = DEFAULT_PRICES;
 
-  // -------------------- LOAD CLIENTS --------------------
+  // =================== PRECARGA EN EDIT CUANDO CAMBIA initial ===================
+  useEffect(() => {
+    if (!initial) return;
+
+    // Cliente en edit: mostrar nombre en input, pero mantener UI igual al create
+    if (mode === "edit") {
+      setClient(null);
+      setQuery((initial.clientName ?? "").trim());
+    } else {
+      // create
+      setClient(null);
+      setQuery("");
+    }
+
+    setCounts({
+      A: Math.max(0, initial.counts?.A ?? 0),
+      N: Math.max(0, initial.counts?.N ?? 0),
+      TE: Math.max(0, initial.counts?.TE ?? 0),
+      D: Math.max(0, initial.counts?.D ?? 0),
+      AC: Math.max(0, initial.counts?.AC ?? 0),
+    });
+
+    setUsePassCard(!!initial.usePassCard);
+    setPassPeople(Math.max(0, initial.passPeople ?? 0));
+    setCardState(emptyCardState);
+
+    const inKeys = initial.keys ?? [];
+    setSelectedKeys(
+      inKeys.map((k) => ({
+        keyId: k.keyId ?? `${k.gender}-${k.number}`,
+        gender: k.gender,
+        number: k.number,
+        duration,
+      }))
+    );
+
+    const firstKey = inKeys[0];
+    setKeyGender((firstKey?.gender as KeyGender) ?? "H");
+
+    setRequiresParking(!!initial.requiresParking);
+  }, [initial, mode]);
+
+  // =================== LOAD CLIENTS (como create) ===================
   useEffect(() => {
     let alive = true;
     (async () => {
-      setLoadingClients(true);
       try {
         const data = await listClients();
-        if (!alive) return;
-        setClients(data);
-
-        // precarga inicial
-        if (mode === "edit") {
-          const initName = (initial?.clientName ?? "").trim();
-          if (initName) setClientName(initName);
-
-          const initId = (initial?.clientId ?? "").trim();
-          if (initId) setSelectedClientId(initId);
-        }
-      } finally {
-        if (alive) setLoadingClients(false);
-      }
+        if (alive) setAllClients(data);
+      } catch {}
     })();
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // -------------------- FILTRO CLIENTE --------------------
-  const filteredClients = useMemo(() => {
-    const nq = norm(clientQ);
-    if (!nq) return clients;
-    return clients.filter((c: any) => norm(c.name ?? c.fullName ?? c.nombre ?? "").includes(nq));
-  }, [clients, clientQ]);
-
-  // -------------------- AUTO-SET CLIENT NAME --------------------
+  // =================== BUSQUEDA CLIENTE (como create) ===================
   useEffect(() => {
-    if (!selectedClientId) return;
-    const found = clients.find((c: any) => (c.id ?? "") === selectedClientId);
-    const name =
-      (found as any)?.name ??
-      (found as any)?.fullName ??
-      (found as any)?.nombre ??
-      (found as any)?.clientName ??
-      "";
-    if (name) setClientName(String(name));
-  }, [selectedClientId, clients]);
+    const t = setTimeout(async () => {
+      const q = query.trim();
+      if (!q) {
+        setResults([]);
+        return;
+      }
 
-  // si en edit no tenemos clientId pero sí nombre, y el usuario selecciona de la lista, ok.
+      if (allClients.length > 0) {
+        const filtered = allClients.filter((c) => matchesPrefixAnyWord(c.name, q)).slice(0, 50);
+        setResults(filtered);
+        return;
+      }
 
-  // -------------------- LOAD KEYS AVAILABLE --------------------
-  async function reloadKeys() {
-    setLoadingKeys(true);
-    try {
-      const freeNums = await fetchAvailableKeysByGender(keyGender);
+      const r = await listClients(q);
+      setResults(r);
+    }, 150);
 
-      // En edición: si ya tiene llaves ocupadas, deben mostrarse “seleccionables”
-      // aunque no estén disponibles. Para eso, unimos:
-      // - disponibles reales (freeNums)
-      // - llaves ya seleccionadas del mismo género (selectedKeys)
-      const already = selectedKeys
-        .filter((k) => k.gender === keyGender)
-        .map((k) => k.number);
+    return () => clearTimeout(t);
+  }, [query, allClients]);
 
-      const union = Array.from(new Set([...freeNums, ...already])).sort((a, b) => a - b);
+  // =================== LLAVES DISPONIBLES (como create) ===================
+  const selectedHash = useMemo(() => {
+    return selectedKeys
+      .filter((k) => k.gender === keyGender)
+      .map((k) => k.number)
+      .sort((a, b) => a - b)
+      .join(",");
+  }, [selectedKeys, keyGender]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const free = await fetchAvailableKeysByGender(keyGender);
+
+      // en EDIT: permitir que salgan seleccionadas aunque backend diga occupied
+      const alreadySelected = new Set(
+        selectedKeys
+          .filter((k) => k.gender === keyGender)
+          .map((k) => k.number)
+      );
+
+      if (!alive) return;
+      const union = Array.from(new Set([...free, ...Array.from(alreadySelected)])).sort((a, b) => a - b);
       setAvailableKeys(union);
-    } finally {
-      setLoadingKeys(false);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [keyGender, selectedHash]);
+
+  // =================== TOTALS (como create) ===================
+  const normalPeople = counts.A + counts.N + counts.TE + counts.D + counts.AC;
+  const totalPeople = normalPeople + (usePassCard ? passPeople : 0);
+
+  const entriesSubtotal = useMemo(() => {
+    return +(
+      counts.A * PRICES_LOCAL.A +
+      counts.N * PRICES_LOCAL.N +
+      counts.TE * PRICES_LOCAL.TE +
+      counts.D * PRICES_LOCAL.D +
+      counts.AC * PRICES_LOCAL.AC
+    ).toFixed(2);
+  }, [counts]);
+
+  const passSale = useMemo(() => {
+    if (!usePassCard) return 0;
+    if (passPeople <= 0) return 0;
+
+    // mismo criterio del create:
+    // - si se crea ahora -> cobrar
+    // - si no existe y está marcado "crear y cobrar" -> cobrar
+    if (cardState.createdNow) return PRICES_LOCAL.PASS;
+    if (!cardState.exists && cardState.willCreateIfMissing) return PRICES_LOCAL.PASS;
+    return 0;
+  }, [usePassCard, passPeople, cardState.createdNow, cardState.exists, cardState.willCreateIfMissing]);
+
+  const keysSubtotal = 0;
+  const parkingSubtotal = 0;
+  const total = useMemo(
+    () => +(entriesSubtotal + passSale + keysSubtotal + parkingSubtotal).toFixed(2),
+    [entriesSubtotal, passSale, keysSubtotal, parkingSubtotal]
+  );
+
+  function setCount(field: keyof typeof counts, v: number) {
+    const n = Math.max(0, Math.floor(Number.isFinite(v) ? v : 0));
+    setCounts((c) => ({ ...c, [field]: n }));
+  }
+
+  async function ensureClient(existing: Client | null, fallbackName: string) {
+    if (existing) return existing;
+    const name = fallbackName.trim();
+    if (!name) throw new Error("Ingresa un nombre de cliente.");
+
+    const created = await createClient({ name } as any);
+    return created as any;
+  }
+
+  function holderNameFromUI(): string {
+    return (client?.name ?? query).trim();
+  }
+
+  async function lookupCard(holderName: string) {
+    setCardState((s) => ({ ...s, loading: true, error: null }));
+    try {
+      const found = await findAccessCardByHolder(holderName);
+      const remaining = remainingFromFound(found);
+
+      setCardState((s) => ({
+        ...s,
+        loading: false,
+        exists: !!found,
+        cardId: found?.card?.id ?? null,
+        remaining,
+        error: null,
+        willCreateIfMissing: found ? false : s.willCreateIfMissing,
+        createdNow: false,
+      }));
+    } catch (e) {
+      setCardState((s) => ({
+        ...s,
+        loading: false,
+        error: (e as Error).message ?? "Error buscando tarjeta.",
+      }));
     }
   }
 
-  useEffect(() => {
-    reloadKeys();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keyGender]);
-
-  // -------------------- HELPERS PEOPLE --------------------
-  function incPeople(k: keyof AccountFormPeople) {
-    setPeople((p) => ({ ...p, [k]: (p[k] ?? 0) + 1 }));
-  }
-  function decPeople(k: keyof AccountFormPeople) {
-    setPeople((p) => ({ ...p, [k]: Math.max(0, (p[k] ?? 0) - 1) }));
-  }
-
-  // -------------------- HELPERS KEYS --------------------
-  function isKeySelected(g: KeyGender, n: number) {
-    return selectedKeys.some((k) => k.gender === g && k.number === n);
-  }
-
-  function toggleKey(g: KeyGender, n: number) {
-    setSelectedKeys((prev) => {
-      const exists = prev.some((k) => k.gender === g && k.number === n);
-      if (exists) return prev.filter((k) => !(k.gender === g && k.number === n));
-      return [...prev, { gender: g, number: n }];
-    });
-  }
-
-  // -------------------- TOTALS --------------------
-  const entriesSubtotal = useMemo(() => {
-    const a = people.adult * PRICES.adult;
-    const n = people.child * PRICES.child;
-    const te = people.te * PRICES.te;
-    const dis = people.dis * PRICES.dis;
-    const ac = people.ac * PRICES.ac;
-    return a + n + te + dis + ac;
-  }, [people, PRICES]);
-
-  const passSale = useMemo(() => {
-    return entryType === ENTRY_PASS10 ? PRICES.passSale : 0;
-  }, [entryType, PRICES]);
-
-  const grandTotal = useMemo(() => {
-    return entriesSubtotal + passSale;
-  }, [entriesSubtotal, passSale]);
-
-  // -------------------- VALIDATION --------------------
-  const canSubmit = useMemo(() => {
-    const nameOk = (clientName ?? "").trim().length >= 2;
-
-    // Si es create: requiere counts o tarjeta; en edit dejamos editar aunque quede en 0.
-    // Si quieres forzar al menos 1 persona, descomenta:
-    // const totalPeople = people.adult + people.child + people.te + people.dis + people.ac;
-    // const peopleOk = totalPeople > 0 || entryType === "Tarjeta 10 pases";
-    const peopleOk = true;
-
-    return nameOk && peopleOk && !saving;
-  }, [clientName, saving]);
-
-  // -------------------- SUBMIT --------------------
-  async function handleSubmit() {
-    if (!canSubmit) return;
-
-    setSaving(true);
+  async function createCardNow(holderName: string) {
+    setCardState((s) => ({ ...s, loading: true, error: null }));
     try {
-      // 1) Resolver clientId
-      let finalClientId = selectedClientId;
+      const created = await createAccessCardForHolder(holderName, 10);
 
-      // Si no hay client seleccionado, intentamos buscarlo por nombre (match exact normalizado)
-      if (!finalClientId) {
-        const target = norm(clientName);
-        const found = clients.find((c: any) => norm(c.name ?? c.fullName ?? c.nombre ?? "") === target);
-        if (found?.id) finalClientId = String(found.id);
+      const uses = Number((created as any)?.card?.uses);
+      const remaining = Number.isFinite(uses)
+        ? uses
+        : Number.isFinite(Number((created as any)?.remaining))
+        ? Number((created as any)?.remaining)
+        : 10;
+
+      setCardState({
+        loading: false,
+        exists: true,
+        cardId: (created as any).card.id,
+        remaining,
+        willCreateIfMissing: true,
+        createdNow: true,
+        error: null,
+      });
+    } catch (e) {
+      setCardState((s) => ({
+        ...s,
+        loading: false,
+        error: (e as Error).message ?? "Error creando tarjeta.",
+      }));
+    }
+  }
+
+  function toggleKey(n: number) {
+    const active = selectedKeys.some((k) => k.gender === keyGender && k.number === n);
+    setSelectedKeys((prev) =>
+      active
+        ? prev.filter((k) => !(k.gender === keyGender && k.number === n))
+        : [...prev, { keyId: `${keyGender}-${n}`, gender: keyGender, number: n, duration }]
+    );
+  }
+
+  // =================== VALIDATION ===================
+  const canSubmit =
+    (client || query.trim().length > 0) &&
+    (normalPeople > 0 || (usePassCard && passPeople > 0) || selectedKeys.length > 0) &&
+    !saving;
+
+  // =================== SUBMIT (EDIT/CREATE) ===================
+  async function handleSave() {
+    try {
+      setSaving(true);
+
+      const holder = await ensureClient(client, query);
+      const holderName = holder.name;
+
+      const hasSomething =
+        normalPeople > 0 || (usePassCard && passPeople > 0) || selectedKeys.length > 0;
+
+      if (!hasSomething) {
+        throw new Error("Agrega al menos 1 persona (normal o tarjeta) o selecciona llaves para continuar.");
       }
 
-      // Si sigue sin id, creamos cliente
-      if (!finalClientId) {
-        const created = await createClient({
-          name: clientName.trim(),
-        } as any);
-        finalClientId = String((created as any)?.id ?? "");
-      }
+      // === misma validación de tarjeta que create, pero sin ejecutar side-effects aquí
+      let shouldChargePassSale = false;
+      let remainingToValidate = 0;
+      let shouldConsumePasses = false;
 
-      if (!finalClientId) throw new Error("No se pudo resolver el cliente.");
+      if (usePassCard && passPeople > 0) {
+        if (cardState.exists && cardState.cardId) {
+          remainingToValidate = cardState.remaining;
+          if (cardState.createdNow) shouldChargePassSale = true;
+        } else {
+          const found = await findAccessCardByHolder(holderName);
+
+          if (found) {
+            const remaining = remainingFromFound(found);
+            remainingToValidate = remaining;
+
+            setCardState((s) => ({
+              ...s,
+              exists: true,
+              cardId: found.card.id,
+              remaining,
+              createdNow: false,
+              error: null,
+            }));
+          } else {
+            if (!cardState.willCreateIfMissing) {
+              throw new Error("No existe tarjeta. Marca 'Crear y cobrar si no existe' para continuar.");
+            }
+
+            // en MODAL (UI) permitimos crear ahora con botón "Crear ahora"
+            // pero si no lo hicieron, aquí no creamos silencioso: forzamos a crear usando el botón.
+            // (mantiene UX clara)
+            throw new Error("Marca 'Crear ahora' para generar la tarjeta antes de guardar.");
+          }
+        }
+
+        if (remainingToValidate < passPeople) {
+          throw new Error(`Tarjeta sin usos suficientes. Restantes: ${remainingToValidate}`);
+        }
+
+        // Si pasa validación, en el padre se hará consumeAccessCardByHolder(...)
+        shouldConsumePasses = true;
+      }
 
       const payload: AccountFormSubmit = {
-        clientId: finalClientId,
-        clientName: clientName.trim(),
-        entryType,
-        gender,
-        requiresParking,
-        people: {
-          adult: Math.max(0, people.adult | 0),
-          child: Math.max(0, people.child | 0),
-          te: Math.max(0, people.te | 0),
-          dis: Math.max(0, people.dis | 0),
-          ac: Math.max(0, people.ac | 0),
+        clientId: holder.id,
+        clientName: holder.name,
+
+        counts: {
+          A: counts.A,
+          N: counts.N,
+          TE: counts.TE,
+          D: counts.D,
+          AC: counts.AC,
         },
-        keys: selectedKeys.slice().sort((a, b) => (a.gender + a.number).localeCompare(b.gender + b.number)),
+
+        usePassCard,
+        passPeople,
+        cardState,
+
+        keyGender,
+        selectedKeys: selectedKeys.slice().sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number),
+        duration,
+
+        requiresParking,
+
         totals: {
           entriesSubtotal,
           passSale,
-          grandTotal,
+          totalPeople,
+          total,
+        },
+
+        passOps: {
+          shouldConsumePasses,
+          shouldChargePassSale: shouldChargePassSale || passSale > 0,
+          remainingToValidate,
         },
       };
 
       await onSubmit(payload);
+    } catch (e) {
+      alert((e as Error).message);
     } finally {
       setSaving(false);
     }
   }
 
-  // -------------------- RENDER --------------------
+  // =================== UI (MISMO LOOK QUE CREATE) ===================
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-3xl rounded-2xl border bg-white shadow-xl">
-        <div className="p-4 border-b flex items-center justify-between">
-          <div className="font-semibold">{mode === "create" ? "Abrir nueva cuenta" : "Editar cuenta"}</div>
-          <button onClick={onCancel} className="text-sm px-2 py-1 rounded border">
-            X
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+      <div className="w-full max-w-4xl max-h-[90vh] rounded-2xl border border-neutral-200 bg-white shadow-2xl overflow-hidden">
+        <div className="px-6 py-4 border-b border-neutral-200 flex items-center justify-between">
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">POS</div>
+            <h2 className="text-lg font-semibold text-neutral-900">
+              {mode === "create" ? "Abrir nueva cuenta" : "Editar cuenta"}
+            </h2>
+          </div>
+          <button
+            onClick={onCancel}
+            className="inline-flex items-center justify-center rounded-lg border border-neutral-200 px-3 py-1.5 text-sm hover:bg-neutral-50"
+            disabled={saving}
+          >
+            Cerrar
           </button>
         </div>
 
-        <div className="p-4 grid gap-4">
-          {/* CLIENTE */}
-          <div>
-            <div className="text-sm font-medium mb-1">Cliente</div>
+        <div className="px-6 py-5 overflow-y-auto max-h-[calc(90vh-140px)]">
+          {/* CLIENTE (MISMO INPUT + LISTA) */}
+          <div className="grid gap-2">
+            <label className="text-sm font-medium text-neutral-900">Cliente</label>
             <input
-              className="border rounded px-3 py-2 w-full"
-              value={clientQ}
-              onChange={(e) => setClientQ(e.target.value)}
+              className="border border-neutral-200 rounded-xl px-3 py-2"
               placeholder="Buscar o ingresar nombre…"
+              value={client ? client.name : query}
+              onChange={(e) => {
+                setClient(null);
+                setQuery(e.target.value);
+              }}
             />
-            <div className="mt-2 grid md:grid-cols-2 gap-2">
-              <div className="border rounded max-h-44 overflow-auto">
-                {loadingClients ? (
-                  <div className="p-3 text-sm text-gray-500">Cargando clientes…</div>
-                ) : filteredClients.length === 0 ? (
-                  <div className="p-3 text-sm text-gray-500">No hay coincidencias. Puedes escribir el nombre.</div>
-                ) : (
-                  filteredClients.map((c: any) => {
-                    const name = String(c.name ?? c.fullName ?? c.nombre ?? "—");
-                    return (
-                      <button
-                        key={String(c.id)}
-                        type="button"
-                        onClick={() => setSelectedClientId(String(c.id))}
-                        className={
-                          "w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-gray-50 " +
-                          (String(c.id) === selectedClientId ? "bg-emerald-50" : "")
-                        }
-                      >
-                        <div className="text-sm font-medium">{name}</div>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
 
-              <div className="border rounded p-3">
-                <div className="text-xs text-gray-500 mb-1">Nombre seleccionado</div>
-                <input
-                  className="border rounded px-3 py-2 w-full"
-                  value={clientName}
-                  onChange={(e) => setClientName(e.target.value)}
-                  placeholder="Nombre del cliente…"
+            {!client && results.length > 0 && (
+              <div className="border border-neutral-200 rounded-xl max-h-48 overflow-auto">
+                {results.map((r) => (
+                  <button
+                    key={r.id}
+                    className="w-full text-left px-3 py-2 hover:bg-neutral-50 border-b border-neutral-100 last:border-b-0"
+                    onClick={() => {
+                      setClient(r);
+                      setQuery("");
+                    }}
+                    type="button"
+                  >
+                    {r.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ENTRADAS NORMAL */}
+          <div className="mt-5 rounded-2xl border border-neutral-200 overflow-hidden">
+            <div className="px-4 py-3 border-b border-neutral-200 font-semibold">Entradas (normal)</div>
+            <div className="p-4 grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              {(["A", "N", "TE", "D", "AC"] as const).map((k) => (
+                <Counter
+                  key={k}
+                  label={labelOf(k)}
+                  price={priceOf(k)}
+                  value={(counts as any)[k]}
+                  onChange={(v) => setCount(k, v)}
                 />
-                <div className="mt-2 text-xs text-gray-500">
-                  Si no existe, se creará automáticamente al guardar.
+              ))}
+            </div>
+          </div>
+
+          {/* TARJETA 10 PASES (IGUAL QUE CREATE) */}
+          <div className="mt-5 rounded-2xl border border-neutral-200 overflow-hidden">
+            <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between gap-3">
+              <div className="font-semibold">Tarjeta 10 pases</div>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={usePassCard}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setUsePassCard(on);
+                    if (!on) {
+                      setPassPeople(0);
+                      setCardState(emptyCardState);
+                    }
+                  }}
+                />
+                <span>Usar tarjeta en este grupo</span>
+              </label>
+            </div>
+
+            {usePassCard ? (
+              <div className="p-4 grid lg:grid-cols-3 gap-4">
+                <div className="rounded-xl border border-neutral-200 p-3">
+                  <div className="text-sm font-medium">Personas que entran con tarjeta</div>
+                  <input
+                    type="number"
+                    min={0}
+                    className="mt-2 border border-neutral-200 rounded-xl px-3 py-2 w-40"
+                    value={passPeople}
+                    onChange={(e) => setPassPeople(Math.max(0, parseInt(e.target.value || "0", 10)))}
+                  />
+                  <p className="mt-2 text-xs text-neutral-500">
+                    Se descontarán {passPeople} usos de la tarjeta.
+                  </p>
+                </div>
+
+                <div className="lg:col-span-2 rounded-xl border border-neutral-200 p-3">
+                  <div className="text-sm font-medium">Validar tarjeta 10 pases</div>
+
+                  <div className="mt-2 flex flex-wrap gap-2 items-center">
+                    <button
+                      className="px-3 py-2 rounded-xl bg-neutral-100 hover:bg-neutral-200 text-sm font-medium disabled:opacity-60"
+                      disabled={!holderNameFromUI() || cardState.loading}
+                      onClick={() => lookupCard(holderNameFromUI())}
+                      type="button"
+                    >
+                      {cardState.loading ? "Buscando…" : "Buscar por nombre"}
+                    </button>
+
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={cardState.willCreateIfMissing}
+                        onChange={(e) =>
+                          setCardState((s) => ({ ...s, willCreateIfMissing: e.target.checked }))
+                        }
+                      />
+                      <span>Crear y cobrar si no existe</span>
+                    </label>
+
+                    {!cardState.exists && cardState.willCreateIfMissing && (
+                      <button
+                        className="px-3 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-60"
+                        disabled={!holderNameFromUI() || cardState.loading}
+                        onClick={() => createCardNow(holderNameFromUI())}
+                        type="button"
+                      >
+                        Crear ahora
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="mt-3 text-sm">
+                    {cardState.error && <p className="text-rose-600">{cardState.error}</p>}
+
+                    {cardState.exists ? (
+                      <p>
+                        ✔ Tarjeta encontrada. Restantes: <b>{cardState.remaining}</b>
+                      </p>
+                    ) : (
+                      <p>
+                        ✖ No existe tarjeta.
+                        {cardState.willCreateIfMissing ? (
+                          <>
+                            {" "}
+                            Se creará y se cobrará <b>${PRICES_LOCAL.PASS}</b>.
+                          </>
+                        ) : (
+                          <> Marca “Crear y cobrar” para continuar.</>
+                        )}
+                      </p>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : (
+              <div className="p-4 text-sm text-neutral-500">
+                Activa esta sección si parte del grupo entra usando tarjeta (se puede combinar con entradas normales).
+              </div>
+            )}
           </div>
 
-          {/* TIPO DE ENTRADA */}
-          <div>
-            <div className="text-sm font-medium mb-2">Tipo de entrada</div>
-            <div className="flex gap-4 text-sm">
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  checked={entryType === ENTRY_NORMAL}
-                  onChange={() => setEntryType(ENTRY_NORMAL)}
-                />
-                Normal
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  checked={entryType === ENTRY_PASS10}
-                  onChange={() => setEntryType(ENTRY_PASS10)}
-                />
-                Tarjeta 10 pases
-              </label>
-            </div>
-          </div>
-
-          {/* ENTRADAS */}
-          <div className="rounded-xl border p-3">
-            <div className="font-semibold text-sm mb-3">Entradas</div>
-
-            <div className="grid sm:grid-cols-5 gap-3">
-              <CounterCard
-                title="Adulto (A)"
-                price={PRICES.adult}
-                value={people.adult}
-                onDec={() => decPeople("adult")}
-                onInc={() => incPeople("adult")}
-              />
-              <CounterCard
-                title="Niño (N)"
-                price={PRICES.child}
-                value={people.child}
-                onDec={() => decPeople("child")}
-                onInc={() => incPeople("child")}
-              />
-              <CounterCard
-                title="3ra edad (TE)"
-                price={PRICES.te}
-                value={people.te}
-                onDec={() => decPeople("te")}
-                onInc={() => incPeople("te")}
-              />
-              <CounterCard
-                title="Discapacidad (D)"
-                price={PRICES.dis}
-                value={people.dis}
-                onDec={() => decPeople("dis")}
-                onInc={() => incPeople("dis")}
-              />
-              <CounterCard
-                title="Acompañante (AC)"
-                price={PRICES.ac}
-                value={people.ac}
-                onDec={() => decPeople("ac")}
-                onInc={() => incPeople("ac")}
-              />
-            </div>
-
-            <div className="mt-3 text-sm text-gray-700">
-              Subtotal (entradas): <span className="font-semibold">{formatMoney(entriesSubtotal)}</span>
-            </div>
-          </div>
-
-          {/* GÉNERO + LLAVES + PARQUEADERO */}
-          <div className="rounded-xl border p-3 grid gap-3">
-            <div className="grid md:grid-cols-2 gap-3 items-end">
+          {/* LLAVES + PARQUEADERO (IGUAL QUE CREATE) */}
+          <div className="mt-5 rounded-2xl border border-neutral-200 p-4">
+            <div className="grid lg:grid-cols-3 gap-4">
               <div>
-                <div className="text-sm font-medium mb-1">Género (para llaves)</div>
+                <div className="text-sm font-medium">Género (para llaves)</div>
                 <select
-                  className="border rounded px-3 py-2 w-full"
+                  className="border border-neutral-200 rounded-xl px-3 py-2 w-full mt-2"
                   value={keyGender}
                   onChange={(e) => setKeyGender(e.target.value as KeyGender)}
                 >
@@ -505,112 +731,96 @@ export default function AccountFormModal({
                 </select>
               </div>
 
-              <div>
-                <div className="text-sm font-medium mb-1">Género cliente</div>
-                <select
-                  className="border rounded px-3 py-2 w-full"
-                  value={gender}
-                  onChange={(e) => setGender(e.target.value as PayGender)}
-                >
-                  <option value="M">Masculino</option>
-                  <option value="F">Femenino</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <div className="text-sm font-medium mb-1">
-                Llaves disponibles ({keyGender === "H" ? "H" : "M"})
-              </div>
-
-              {loadingKeys ? (
-                <div className="text-sm text-gray-500">Cargando llaves…</div>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {availableKeys.length === 0 && (
-                    <span className="text-xs text-gray-500">No hay llaves libres</span>
-                  )}
-
+              <div className="lg:col-span-2">
+                <div className="text-sm font-medium">Llaves disponibles ({keyGender})</div>
+                <div className="mt-2 flex flex-wrap gap-2">
                   {availableKeys.map((n) => {
-                    const active = isKeySelected(keyGender, n);
+                    const active = selectedKeys.some((k) => k.number === n && k.gender === keyGender);
                     return (
                       <button
                         key={`${keyGender}-${n}`}
                         type="button"
-                        onClick={() => toggleKey(keyGender, n)}
+                        onClick={() => toggleKey(n)}
                         className={
-                          "px-3 py-1 rounded border text-sm " +
-                          (active ? "bg-emerald-600 text-white border-emerald-600" : "hover:bg-gray-50")
+                          "px-3 py-2 rounded-full border text-sm font-semibold " +
+                          (active
+                            ? "bg-blue-600 text-white border-blue-600"
+                            : "bg-white border-neutral-200 hover:bg-neutral-50")
                         }
                       >
                         {n}
                       </button>
                     );
                   })}
+
+                  {availableKeys.length === 0 && (
+                    <span className="text-sm text-neutral-500">No hay llaves libres</span>
+                  )}
                 </div>
-              )}
-
-              <div className="mt-2 text-xs text-gray-500">
-                En edición, las llaves ya asignadas aparecen seleccionables aunque estén ocupadas.
-              </div>
-
-              {/* Resumen llaves seleccionadas */}
-              <div className="mt-2 text-sm">
-                Seleccionadas:{" "}
-                <span className="font-medium">
-                  {selectedKeys.length === 0
-                    ? "—"
-                    : selectedKeys
-                        .slice()
-                        .sort((a, b) => (a.gender + a.number).localeCompare(b.gender + b.number))
-                        .map((k) => `${k.number}${k.gender}`)
-                        .join(", ")}
-                </span>
               </div>
             </div>
 
-            <label className="flex items-center gap-2 text-sm">
+            {selectedKeys.length > 0 && (
+              <div className="mt-4">
+                <div className="text-sm font-medium">Llaves seleccionadas</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {selectedKeys
+                    .slice()
+                    .sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number)
+                    .map((k) => (
+                      <span
+                        key={k.keyId}
+                        className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-sm"
+                      >
+                        {k.number}
+                        {k.gender}
+                        <button
+                          type="button"
+                          className="opacity-70 hover:opacity-100"
+                          onClick={() => setSelectedKeys((prev) => prev.filter((x) => x.keyId !== k.keyId))}
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-4 flex items-center gap-2">
               <input
+                id="requiresParking"
                 type="checkbox"
+                className="h-4 w-4"
                 checked={requiresParking}
                 onChange={(e) => setRequiresParking(e.target.checked)}
               />
-              Requiere parqueadero ({PRICES.parkingRateLabel})
-            </label>
+              <label htmlFor="requiresParking" className="text-sm">
+                Requiere parqueadero (0.50 la hora o fracción)
+              </label>
+            </div>
           </div>
 
-          {/* BAR: SOLO CREATE */}
-          {mode === "create" ? (
-            <div className="rounded-xl border p-3 flex items-center justify-between">
-              <div className="text-sm font-medium">Consumo de bar inicial</div>
-              <div className="text-xs text-gray-500">Se gestiona en “Agregar cargo” luego</div>
-            </div>
-          ) : null}
-
-          {/* TOTALES */}
-          <div className="grid sm:grid-cols-3 gap-3">
-            <div className="rounded-xl border p-3">
-              <div className="text-xs text-gray-500">Subtotal (entradas)</div>
-              <div className="text-xl font-semibold">{formatMoney(entriesSubtotal)}</div>
-            </div>
-            <div className="rounded-xl border p-3">
-              <div className="text-xs text-gray-500">Venta de pase</div>
-              <div className="text-xl font-semibold">{formatMoney(passSale)}</div>
-            </div>
-            <div className="rounded-xl border p-3 bg-emerald-50">
-              <div className="text-xs text-gray-500">Total</div>
-              <div className="text-xl font-semibold text-emerald-700">{formatMoney(grandTotal)}</div>
-            </div>
+          {/* TOTALES (IGUAL QUE CREATE) */}
+          <div className="grid md:grid-cols-4 gap-3 mt-5">
+            <TotalCard label="Subtotal (normal)" value={entriesSubtotal} />
+            <TotalCard label="Venta tarjeta (si aplica)" value={passSale} />
+            <TotalCard label="Personas (total)" valueNumber={totalPeople} />
+            <TotalCard label="Total" value={total} highlight />
           </div>
         </div>
 
-        <div className="p-4 border-t flex justify-end gap-2">
-          <button onClick={onCancel} className="px-4 py-2 rounded-xl border" disabled={saving}>
+        <div className="px-6 py-4 border-t border-neutral-200 flex justify-end gap-2 bg-white">
+          <button
+            className="px-4 py-2 rounded-xl border border-neutral-200 hover:bg-neutral-50"
+            onClick={onCancel}
+            disabled={saving}
+          >
             Cancelar
           </button>
           <button
-            onClick={handleSubmit}
-            className="px-4 py-2 rounded-xl bg-indigo-600 text-white disabled:opacity-60"
+            className="px-5 py-2 rounded-full bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-60"
+            onClick={handleSave}
             disabled={!canSubmit}
           >
             {saving ? "Guardando…" : mode === "create" ? "Crear cuenta" : "Guardar cambios"}
@@ -621,41 +831,107 @@ export default function AccountFormModal({
   );
 }
 
-/* ---------------- UI: CounterCard ---------------- */
+/* ---------- Subcomponentes ---------- */
 
-function CounterCard({
-  title,
+function Counter({
+  label,
   price,
   value,
-  onDec,
-  onInc,
+  onChange,
 }: {
-  title: string;
+  label: string;
   price: number;
   value: number;
-  onDec: () => void;
-  onInc: () => void;
+  onChange: (v: number) => void;
 }) {
-  const subtotal = (value ?? 0) * (price ?? 0);
+  const safe = Math.max(0, Math.floor(Number.isFinite(value) ? value : 0));
+  const subtotal = +(safe * price).toFixed(2);
 
   return (
-    <div className="rounded-xl border p-3">
-      <div className="text-xs text-gray-500">{title}</div>
-      <div className="text-xs text-gray-500">Precio: {formatMoney(price)}</div>
+    <div className="rounded-xl border border-neutral-200 p-3 bg-white">
+      <div className="text-sm font-semibold text-neutral-900">{label}</div>
+      <div className="text-xs text-neutral-500">Precio: ${price.toFixed(2)}</div>
 
-      <div className="mt-2 flex items-center justify-between gap-2">
-        <button type="button" onClick={onDec} className="w-9 h-9 rounded border">
-          -
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          className="h-9 w-9 rounded-lg border border-neutral-200 bg-neutral-50 hover:bg-neutral-100 font-semibold"
+          onClick={() => onChange(Math.max(0, safe - 1))}
+        >
+          −
         </button>
-        <div className="text-xl font-semibold w-10 text-center">{value}</div>
-        <button type="button" onClick={onInc} className="w-9 h-9 rounded border">
+
+        <input
+          type="number"
+          className="h-9 w-16 text-center border border-neutral-200 rounded-lg px-2"
+          value={safe}
+          onChange={(e) => onChange(Math.max(0, parseInt(e.target.value || "0", 10)))}
+          min={0}
+        />
+
+        <button
+          type="button"
+          className="h-9 w-9 rounded-lg border border-neutral-200 bg-neutral-50 hover:bg-neutral-100 font-semibold"
+          onClick={() => onChange(safe + 1)}
+        >
           +
         </button>
       </div>
 
-      <div className="mt-2 text-xs text-gray-500">
-        Subtotal: <span className="font-semibold text-gray-800">{formatMoney(subtotal)}</span>
+      <div className="mt-3 text-sm">
+        Subtotal: <b>${subtotal.toFixed(2)}</b>
       </div>
     </div>
   );
+}
+
+function TotalCard({
+  label,
+  value,
+  valueNumber,
+  highlight,
+}: {
+  label: string;
+  value?: number;
+  valueNumber?: number;
+  highlight?: boolean;
+}) {
+  const isNumberCard = typeof valueNumber === "number";
+  return (
+    <div className={`rounded-xl border border-neutral-200 p-4 ${highlight ? "bg-emerald-50" : "bg-white"}`}>
+      <div className="text-xs font-medium text-neutral-500">{label}</div>
+      {isNumberCard ? (
+        <div className={`mt-1 text-2xl font-semibold ${highlight ? "text-emerald-700" : "text-neutral-900"}`}>
+          {valueNumber}
+        </div>
+      ) : (
+        <div className={`mt-1 text-2xl font-semibold ${highlight ? "text-emerald-700" : "text-neutral-900"}`}>
+          ${(value ?? 0).toFixed(2)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function labelOf(k: "A" | "N" | "TE" | "D" | "AC") {
+  return k === "A"
+    ? "Adulto"
+    : k === "N"
+    ? "Niño"
+    : k === "TE"
+    ? "3ra edad"
+    : k === "D"
+    ? "Discapacidad"
+    : "Acompañante";
+}
+function priceOf(k: "A" | "N" | "TE" | "D" | "AC") {
+  return k === "A"
+    ? PRICES_LOCAL.A
+    : k === "N"
+    ? PRICES_LOCAL.N
+    : k === "TE"
+    ? PRICES_LOCAL.TE
+    : k === "D"
+    ? PRICES_LOCAL.D
+    : PRICES_LOCAL.AC;
 }

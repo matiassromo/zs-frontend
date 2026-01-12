@@ -12,27 +12,20 @@ import {
   printAccountReceipt,
   addCharge,
   updateAccount,
-  AccountSummary,
-  Charge,
-  Payment,
+  type AccountSummary,
+  type Charge,
+  type Payment,
 } from "@/lib/api/accounts";
 
 // ✅ modal unificado create/edit
 import AccountFormModal from "@/components/pos/AccountFormModal";
 import { toDateKey, getCashboxByDate, addPosPaymentMove } from "@/lib/apiv2/cashbox";
 
-
-// ✅ llaves backend real
-import { listKeys, updateKey } from "@/lib/apiv2/keys";
-import type { Key } from "@/types/key";
-
 // ✅ bar
 import { listBarProducts } from "@/lib/apiv2/barProducts";
 import type { BarProduct } from "@/types/barProduct";
 
-
 type PayMethod = "Efectivo" | "Transferencia";
-type KeyGender = "H" | "M";
 
 function norm(s: string) {
   return (s ?? "")
@@ -40,27 +33,6 @@ function norm(s: string) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .trim();
-}
-
-function formatKeyLabel(g: KeyGender, n: number) {
-  return `${n}${g}`;
-}
-
-function computeKeyGenderAndNumber(orderedIndex: number): { gender: KeyGender; number: number } {
-  const gender: KeyGender = orderedIndex < 16 ? "H" : "M";
-  const number = gender === "H" ? orderedIndex + 1 : orderedIndex - 16 + 1;
-  return { gender, number };
-}
-
-async function findKeyEntityByGenderNumber(g: KeyGender, n: number): Promise<Key | null> {
-  const raw: Key[] = await listKeys();
-  const ordered = [...raw].sort((a, b) => a.id.localeCompare(b.id));
-
-  for (let idx = 0; idx < ordered.length; idx++) {
-    const { gender, number } = computeKeyGenderAndNumber(idx);
-    if (gender === g && number === n) return ordered[idx];
-  }
-  return null;
 }
 
 /* ----------------- POS LOCK (mismo criterio que Caja Diaria) ----------------- */
@@ -91,7 +63,6 @@ export default function AccountDetail({
   // ✅ modales/acciones
   const [editFormOpen, setEditFormOpen] = useState(false);
   const [addChargeOpen, setAddChargeOpen] = useState(false);
-  const [keysOpen, setKeysOpen] = useState(false);
 
   // ✅ para evitar doble click / estado de acciones
   const [closing, setClosing] = useState(false);
@@ -100,8 +71,9 @@ export default function AccountDetail({
   // ✅ estado POS habilitado por caja diaria (según fecha de la cuenta)
   const [posEnabled, setPosEnabled] = useState(true);
   const [posReason, setPosReason] = useState<string | null>(null);
-  const lastScrollYRef = useRef(0);
 
+  // ✅ guarda scroll al pagar
+  const lastScrollYRef = useRef(0);
 
   async function loadAll() {
     setLoading(true);
@@ -147,8 +119,7 @@ export default function AccountDetail({
 
   // ✅ escuchar cambios desde Caja Diaria (abrir/cerrar) o pagos (POS)
   useEffect(() => {
-    function onCashboxChanged(e: any) {
-      // refresca gate y pagos/cargos por si hubo pagos desde POS
+    function onCashboxChanged() {
       refreshPosGateFromSummary(summary);
       loadAll();
     }
@@ -162,7 +133,7 @@ export default function AccountDetail({
     return summary.saldo > 0 ? "text-rose-600" : "text-emerald-600";
   }, [summary]);
 
-    const hasPendingCharges = useMemo(() => {
+  const hasPendingCharges = useMemo(() => {
     return charges.some((c) => {
       const isKey = c.kind === "Key";
       const isZero = c.total <= 0;
@@ -176,7 +147,6 @@ export default function AccountDetail({
     if (hasPendingCharges) return "No puedes cerrar: aún hay cargos pendientes por pagar.";
     return null;
   }, [posEnabled, posReason, hasPendingCharges]);
-
 
   function findChargePaidMethod(chargeId: string): PayMethod | null {
     const tag = `charge:${chargeId}`;
@@ -192,56 +162,52 @@ export default function AccountDetail({
     return null;
   }
 
-async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
-  if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
+  async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
+    if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
 
-  // ✅ guarda scroll antes de refrescar/cerrar modal
-  lastScrollYRef.current = window.scrollY;
+    lastScrollYRef.current = window.scrollY;
 
-  const c = charges.find((x) => x.id === form.chargeId);
-  if (!c) return;
-  if (c.kind === "Key") return;
+    const c = charges.find((x) => x.id === form.chargeId);
+    if (!c) return;
+    if (c.kind === "Key") return;
 
-  if (c.total <= 0) {
-    throw new Error("No se puede registrar pago cuando el total es $0.00");
+    if (c.total <= 0) {
+      throw new Error("No se puede registrar pago cuando el total es $0.00");
+    }
+
+    await addPayment(accountId, {
+      method: form.method,
+      amount: c.total,
+      note: `charge:${form.chargeId}`,
+    });
+
+    await markChargePaid(accountId, form.chargeId);
+
+    const dk = toDateKey(new Date(summary?.openedAt ?? new Date()));
+    addPosPaymentMove({
+      dateKey: dk,
+      amount: c.total,
+      method: form.method,
+      concept: `Cuenta #${accountId} · ${summary?.clientName ?? ""} · ${c.concept}`,
+      createdBy: "pos",
+      ref: { kind: "Charge", id: c.id },
+    });
+
+    await loadAll();
+    setPayChargeId(null);
+
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: lastScrollYRef.current, left: 0, behavior: "auto" });
+    });
+
+    emitCashboxChanged(dk);
+    onChanged?.();
   }
-
-  await addPayment(accountId, {
-    method: form.method,
-    amount: c.total,
-    note: `charge:${form.chargeId}`,
-  });
-
-  await markChargePaid(accountId, form.chargeId);
-
-  const dk = toDateKey(new Date(summary?.openedAt ?? new Date()));
-  addPosPaymentMove({
-    dateKey: dk,
-    amount: c.total,
-    method: form.method,
-    concept: `Cuenta #${accountId} · ${summary?.clientName ?? ""} · ${c.concept}`,
-    createdBy: "pos",
-    ref: { kind: "Charge", id: c.id },
-  });
-
-  await loadAll();
-  setPayChargeId(null);
-
-  // ✅ vuelve al mismo scroll (evita que suba)
-  requestAnimationFrame(() => {
-    window.scrollTo({ top: lastScrollYRef.current, left: 0, behavior: "auto" });
-  });
-
-  emitCashboxChanged(dk);
-  onChanged?.();
-}
-
 
   async function handleCloseAccount() {
     if (!posEnabled) return;
     if (closing) return;
 
-    // ✅ NO cerrar si quedan cargos pendientes (no Key y total>0)
     const pending = charges.some((c) => c.kind !== "Key" && c.total > 0 && c.status !== "Pagado");
     if (pending) {
       alert("No puedes cerrar la cuenta: existen cargos pendientes por pagar.");
@@ -257,7 +223,6 @@ async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
       setClosing(false);
     }
   }
-
 
   async function handlePrintReceipt() {
     if (printing) return;
@@ -290,60 +255,6 @@ async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
     onChanged?.();
   }
 
-  async function handleAddKey(input: { gender: KeyGender; number: number; clientName: string }) {
-    if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
-    if (!summary) return;
-    if (summary.status !== "Abierta") throw new Error("Solo puedes modificar cuentas abiertas.");
-
-    const key = await findKeyEntityByGenderNumber(input.gender, input.number);
-    if (!key) throw new Error("No se encontró esa llave.");
-    if (!key.available) throw new Error("Esa llave ya está ocupada.");
-
-    const note = `Cuenta ${accountId} - ${input.clientName}`;
-
-    await updateKey(key.id, {
-      available: false,
-      lastAssignedClient: input.clientName,
-      notes: note,
-    });
-
-    await addCharge(accountId, {
-      kind: "Key",
-      concept: `Llave ${formatKeyLabel(input.gender, input.number)} (asignación)`,
-      qty: 1,
-      amount: 0,
-    });
-
-    await loadAll();
-    onChanged?.();
-  }
-
-  async function handleRemoveKey(input: { gender: KeyGender; number: number; clientName: string }) {
-    if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
-    if (!summary) return;
-    if (summary.status !== "Abierta") throw new Error("Solo puedes modificar cuentas abiertas.");
-
-    const key = await findKeyEntityByGenderNumber(input.gender, input.number);
-    if (!key) throw new Error("No se encontró esa llave.");
-    if (key.available) throw new Error("Esa llave ya está libre.");
-
-    await updateKey(key.id, {
-      available: true,
-      lastAssignedClient: input.clientName,
-      notes: `Liberada desde cuenta ${accountId}`,
-    });
-
-    await addCharge(accountId, {
-      kind: "Key",
-      concept: `Llave ${formatKeyLabel(input.gender, input.number)} (devolución)`,
-      qty: 1,
-      amount: 0,
-    });
-
-    await loadAll();
-    onChanged?.();
-  }
-
   if (loading) return <div className="mt-4 text-sm text-neutral-500">Cargando detalle…</div>;
   if (!summary) return null;
 
@@ -355,12 +266,9 @@ async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
       <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden">
         {/* Header del panel */}
         <div className="px-4 py-3 border-b border-neutral-200">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-            Detalle de cuenta
-          </div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">Detalle de cuenta</div>
           <div className="text-sm font-semibold text-neutral-900">Cuenta #{summary.id}</div>
 
-          {/* ✅ Banner POS gate */}
           {!posEnabled && (
             <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
               {posReason ?? "POS cerrado para este día."}
@@ -374,20 +282,17 @@ async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div className="min-w-0">
                 <div className="text-sm text-neutral-600">
-                  Cuenta #{summary.id} ·{" "}
-                  <span className="font-medium text-neutral-900">{summary.clientName}</span>
+                  Cuenta #{summary.id} · <span className="font-medium text-neutral-900">{summary.clientName}</span>
                 </div>
                 <div className="mt-1 text-sm">
                   <span className="font-medium">Estado:</span> {summary.status}
                 </div>
                 <div className="text-sm">
-                  <span className="font-medium">Entrada:</span>{" "}
-                  {new Date(summary.openedAt).toLocaleString("es-EC")}
+                  <span className="font-medium">Entrada:</span> {new Date(summary.openedAt).toLocaleString("es-EC")}
                 </div>
                 {summary.closedAt && (
                   <div className="text-sm">
-                    <span className="font-medium">Salida:</span>{" "}
-                    {new Date(summary.closedAt).toLocaleString("es-EC")}
+                    <span className="font-medium">Salida:</span> {new Date(summary.closedAt).toLocaleString("es-EC")}
                   </div>
                 )}
               </div>
@@ -400,13 +305,6 @@ async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
                     className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50 disabled:opacity-50"
                   >
                     Editar cuenta
-                  </button>
-                  <button
-                    onClick={() => setKeysOpen(true)}
-                    disabled={!posEnabled}
-                    className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50 disabled:opacity-50"
-                  >
-                    Llaves
                   </button>
                   <button
                     onClick={() => setAddChargeOpen(true)}
@@ -424,21 +322,15 @@ async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="rounded-xl border border-neutral-200 bg-white p-4">
               <div className="text-xs font-medium text-neutral-500">Total cargos</div>
-              <div className="mt-1 text-2xl font-semibold text-neutral-900">
-                ${summary.totalCargos.toFixed(2)}
-              </div>
+              <div className="mt-1 text-2xl font-semibold text-neutral-900">${summary.totalCargos.toFixed(2)}</div>
             </div>
             <div className="rounded-xl border border-neutral-200 bg-white p-4">
               <div className="text-xs font-medium text-neutral-500">Total pagos</div>
-              <div className="mt-1 text-2xl font-semibold text-neutral-900">
-                ${summary.totalPagos.toFixed(2)}
-              </div>
+              <div className="mt-1 text-2xl font-semibold text-neutral-900">${summary.totalPagos.toFixed(2)}</div>
             </div>
             <div className="rounded-xl border border-neutral-200 bg-white p-4">
               <div className="text-xs font-medium text-neutral-500">Saldo</div>
-              <div className={`mt-1 text-2xl font-semibold ${saldoColor}`}>
-                ${summary.saldo.toFixed(2)}
-              </div>
+              <div className={`mt-1 text-2xl font-semibold ${saldoColor}`}>${summary.saldo.toFixed(2)}</div>
             </div>
           </div>
 
@@ -496,56 +388,48 @@ async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
 
                     return (
                       <tr key={c.id} className="border-t border-neutral-200">
-                        <td className="py-3 px-3 whitespace-nowrap">
-                          {new Date(c.createdAt).toLocaleString("es-EC")}
-                        </td>
+                        <td className="py-3 px-3 whitespace-nowrap">{new Date(c.createdAt).toLocaleString("es-EC")}</td>
                         <td className="py-3 px-3">{c.kind}</td>
                         <td className="py-3 px-3">
                           {c.kind === "Key" ? c.concept.replace(/\s*\(\s*1H\s*\)\s*$/i, "") : c.concept}
                         </td>
                         <td className="py-3 px-3">{c.qty}</td>
 
-                        {/* ✅ llaves sin precio */}
                         <td className="py-3 px-3">
-                          {isKey || c.total <= 0 ? (
-                            <span className="text-neutral-400">—</span>
-                          ) : (
-                            `$${c.amount.toFixed(2)}`
-                          )}
+                          {isKey || c.total <= 0 ? <span className="text-neutral-400">—</span> : `$${c.amount.toFixed(2)}`}
                         </td>
 
                         <td className="py-3 px-3 font-semibold">
-                          {isKey || c.total <= 0 ? (
-                            <span className="text-neutral-400">—</span>
-                          ) : (
-                            `$${c.total.toFixed(2)}`
-                          )}
+                          {isKey || c.total <= 0 ? <span className="text-neutral-400">—</span> : `$${c.total.toFixed(2)}`}
                         </td>
+
                         <td className="py-3 px-3">
                           {c.status === "Pagado" ? (
                             <span className="inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800">
                               {paidMethod ? `Pagado (${paidMethod})` : "Pagado"}
                             </span>
                           ) : c.total <= 0 ? (
-                            <span className="text-xs text-neutral-400">—</span> // o "Sin cobro"
+                            <span className="text-xs text-neutral-400">—</span>
                           ) : (
                             <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800">
                               Pendiente
                             </span>
                           )}
                         </td>
+
                         <td className="py-3 px-3 text-right">
-                          {/* ✅ NO registrar pago para llaves */}
                           {summary.status === "Abierta" && c.status === "Pendiente" && !isKey ? (
                             <button
                               onClick={() => {
-                                if (c.total <= 0) return; // ✅ no abrir modal si total es 0
+                                if (c.total <= 0) return;
                                 setPayChargeId(c.id);
                               }}
-                              disabled={!posEnabled || c.total <= 0} // ✅ bloquea si total 0
+                              disabled={!posEnabled || c.total <= 0}
                               className={
                                 "inline-flex items-center justify-center rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-50 " +
-                                (c.total <= 0 ? "bg-neutral-300 cursor-not-allowed" : "bg-emerald-600 hover:bg-emerald-700")
+                                (c.total <= 0
+                                  ? "bg-neutral-300 cursor-not-allowed"
+                                  : "bg-emerald-600 hover:bg-emerald-700")
                               }
                               title={c.total <= 0 ? "No se puede pagar un cargo con total $0.00" : undefined}
                             >
@@ -587,9 +471,7 @@ async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
                 <tbody>
                   {payments.map((p) => (
                     <tr key={p.id} className="border-t border-neutral-200">
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        {new Date(p.createdAt).toLocaleString("es-EC")}
-                      </td>
+                      <td className="py-3 px-3 whitespace-nowrap">{new Date(p.createdAt).toLocaleString("es-EC")}</td>
                       <td className="py-3 px-3">{(p as any).method}</td>
                       <td className="py-3 px-3 font-semibold">${p.amount.toFixed(2)}</td>
                     </tr>
@@ -625,10 +507,8 @@ async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
           initial={{
             clientId: sAny.clientId ?? null,
             clientName: summary.clientName ?? "",
-            entryType: sAny.entryType,
-            gender: sAny.gender ?? "M",
             requiresParking: sAny.requiresParking ?? false,
-            people: sAny.people ?? { adult: 0, child: 0, te: 0, dis: 0, ac: 0 },
+            // ⛔ si ya no usas llaves, elimina estas 2 líneas también en AccountFormModal
             keys: (sAny.keys ?? []).map((k: any) => ({ gender: k.gender, number: k.number })),
           }}
           onCancel={() => setEditFormOpen(false)}
@@ -638,11 +518,9 @@ async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
             await updateAccount(accountId, {
               clientId: payload.clientId,
               clientName: payload.clientName,
-              entryType: payload.entryType,
-              gender: payload.gender,
               requiresParking: payload.requiresParking,
-              people: payload.people,
-              keys: payload.keys,
+              // ⛔ si ya no usas llaves, elimina esta línea también
+              keys: (payload as any).keys,
             } as any);
 
             setEditFormOpen(false);
@@ -660,16 +538,6 @@ async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
             await handleAddExtraCharge(payload);
             setAddChargeOpen(false);
           }}
-        />
-      )}
-
-      {/* Modal llaves */}
-      {keysOpen && (
-        <KeysModal
-          currentClientName={summary.clientName}
-          onCancel={() => setKeysOpen(false)}
-          onAddKey={handleAddKey}
-          onRemoveKey={handleRemoveKey}
         />
       )}
     </div>
@@ -945,149 +813,6 @@ function AddChargeModal({
             disabled={tab === "bar" ? !selected : !concept.trim() || !Number.isFinite(amount)}
           >
             Agregar
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------- Modal llaves ---------------- */
-
-function KeysModal({
-  currentClientName,
-  onCancel,
-  onAddKey,
-  onRemoveKey,
-}: {
-  currentClientName: string;
-  onCancel: () => void;
-  onAddKey: (payload: { gender: KeyGender; number: number; clientName: string }) => Promise<void>;
-  onRemoveKey: (payload: { gender: KeyGender; number: number; clientName: string }) => Promise<void>;
-}) {
-  const [gender, setGender] = useState<KeyGender>("H");
-  const [free, setFree] = useState<number[]>([]);
-  const [busy, setBusy] = useState<number[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  async function reload() {
-    setLoading(true);
-    try {
-      const raw: Key[] = await listKeys();
-      const ordered = [...raw].sort((a, b) => a.id.localeCompare(b.id));
-
-      const freeNums: number[] = [];
-      const busyNums: number[] = [];
-
-      ordered.forEach((k, idx) => {
-        const g: KeyGender = idx < 16 ? "H" : "M";
-        if (g !== gender) return;
-        const n = g === "H" ? idx + 1 : idx - 16 + 1;
-        if (k.available) freeNums.push(n);
-        else busyNums.push(n);
-      });
-
-      setFree(freeNums.sort((a, b) => a - b));
-      setBusy(busyNums.sort((a, b) => a - b));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gender]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-2xl rounded-2xl border border-neutral-200 bg-white shadow-xl overflow-hidden">
-        <div className="p-4 border-b border-neutral-200 flex items-center justify-between">
-          <div className="font-semibold">Gestión de llaves</div>
-          <button onClick={onCancel} className="text-sm px-3 py-1 rounded-lg border">
-            Cerrar
-          </button>
-        </div>
-
-        <div className="p-4 grid gap-4">
-          <div className="flex gap-2">
-            <button
-              onClick={() => setGender("H")}
-              className={
-                "px-3 py-2 rounded-full border text-sm font-semibold " +
-                (gender === "H"
-                  ? "bg-neutral-900 text-white border-neutral-900"
-                  : "border-neutral-200 hover:bg-neutral-50")
-              }
-            >
-              Hombres
-            </button>
-            <button
-              onClick={() => setGender("M")}
-              className={
-                "px-3 py-2 rounded-full border text-sm font-semibold " +
-                (gender === "M"
-                  ? "bg-neutral-900 text-white border-neutral-900"
-                  : "border-neutral-200 hover:bg-neutral-50")
-              }
-            >
-              Mujeres
-            </button>
-          </div>
-
-          {loading ? (
-            <div className="text-sm text-neutral-500">Cargando llaves…</div>
-          ) : (
-            <div className="grid md:grid-cols-2 gap-4">
-              <div className="rounded-xl border border-neutral-200 p-3">
-                <div className="font-semibold text-sm mb-2">Disponibles</div>
-                <div className="flex flex-wrap gap-2">
-                  {free.length === 0 && <span className="text-xs text-neutral-500">No hay llaves libres</span>}
-                  {free.map((n) => (
-                    <button
-                      key={`free-${gender}-${n}`}
-                      className="px-3 py-2 rounded-full border border-neutral-200 text-sm hover:bg-emerald-50"
-                      onClick={async () => {
-                        await onAddKey({ gender, number: n, clientName: currentClientName });
-                        await reload();
-                      }}
-                      type="button"
-                    >
-                      Asignar {formatKeyLabel(gender, n)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-neutral-200 p-3">
-                <div className="font-semibold text-sm mb-2">Ocupadas</div>
-                <div className="flex flex-wrap gap-2">
-                  {busy.length === 0 && <span className="text-xs text-neutral-500">No hay llaves ocupadas</span>}
-                  {busy.map((n) => (
-                    <button
-                      key={`busy-${gender}-${n}`}
-                      className="px-3 py-2 rounded-full border border-neutral-200 text-sm hover:bg-amber-50"
-                      onClick={async () => {
-                        await onRemoveKey({ gender, number: n, clientName: currentClientName });
-                        await reload();
-                      }}
-                      type="button"
-                    >
-                      Liberar {formatKeyLabel(gender, n)}
-                    </button>
-                  ))}
-                </div>
-                <div className="mt-2 text-xs text-neutral-500">
-                  Este modal libera/asigna llaves en inventario y registra el evento como cargo (sin valor).
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="p-4 border-t border-neutral-200 flex justify-end">
-          <button onClick={onCancel} className="px-4 py-2 rounded-xl border border-neutral-200">
-            Cerrar
           </button>
         </div>
       </div>

@@ -8,9 +8,34 @@ import type { LockerKey, LockerZone } from "@/types/lockerKey";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+const SINCE_MAP_KEY = "zs:keys:sinceMap";
+
+function readSinceMap(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(window.localStorage.getItem(SINCE_MAP_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function writeSinceMap(map: Record<string, string>) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(SINCE_MAP_KEY, JSON.stringify(map));
+}
+
+
 export default function LlavesPage() {
   const [keys, setKeys] = useState<LockerKey[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
 
   async function load(silent = false) {
     if (!silent) setLoading(true);
@@ -19,15 +44,67 @@ export default function LlavesPage() {
       const raw: Key[] = await listKeys();
       const ordered = [...raw].sort((a, b) => a.id.localeCompare(b.id));
 
+      const sinceMap = readSinceMap();
+      let sinceMapChanged = false;
+
       const lockerKeys: LockerKey[] = ordered.map((k, index) => {
         const zone: LockerZone = index < 16 ? "Hombres" : "Mujeres";
         const indexInZone = zone === "Hombres" ? index + 1 : index - 16 + 1;
         const code = `${indexInZone}${zone === "Hombres" ? "H" : "M"}`;
 
-        const client = k.lastAssignedClient ?? null;
-        const note = (k as any).notes ?? null;
+        const client = (k as any).lastAssignedClient?.name ?? null;
+
+        const rawNote: string | null = (k as any).notes ?? null;
+        const cleanNote = rawNote
+          ? rawNote
+              .replace(/^Cuenta\s*\d+\s*-\s*/i, "")
+              .replace(/^-\s*/i, "")
+              .trim()
+          : null;
+
         const assigned =
-          client && note ? `${client} · ${note}` : client || null;
+          client
+            ? (cleanNote && cleanNote.toLowerCase() !== client.toLowerCase()
+                ? `${client}`
+                : `${client}`)
+            : null;
+
+        // ✅ intentamos usar un timestamp del backend si existe
+        const sinceFromApi =
+          (k as any).lastAssignedAt ??
+          (k as any).assignedAt ??
+          (k as any).updatedAt ??
+          (k as any).modifiedAt ??
+          null;
+
+        let since: string | null = null;
+
+        if (!k.available) {
+          // si viene del backend
+          if (typeof sinceFromApi === "string") {
+            since = sinceFromApi;
+          } else if (sinceFromApi) {
+            // por si viene como Date/number
+            const d = new Date(sinceFromApi);
+            since = isNaN(d.getTime()) ? null : d.toISOString();
+          }
+
+          // si NO viene del backend, usamos localStorage (desde que la vimos asignada)
+          if (!since) {
+            if (!sinceMap[k.id]) {
+              sinceMap[k.id] = new Date().toISOString();
+              sinceMapChanged = true;
+            }
+            since = sinceMap[k.id];
+          }
+        } else {
+          // si ya está libre, limpiamos el since guardado
+          if (sinceMap[k.id]) {
+            delete sinceMap[k.id];
+            sinceMapChanged = true;
+          }
+          since = null;
+        }
 
         return {
           id: k.id,
@@ -35,9 +112,14 @@ export default function LlavesPage() {
           zone,
           status: k.available ? "disponible" : "ocupada",
           assignedTo: assigned,
-          since: null,
+          since, // ✅ ahora sí
         };
       });
+
+      if (sinceMapChanged) writeSinceMap(sinceMap);
+
+      setKeys(lockerKeys);
+
 
       setKeys(lockerKeys);
     } finally {
@@ -71,11 +153,12 @@ export default function LlavesPage() {
     const k = keys.find((x) => x.code === code);
     if (!k) return;
 
-    await updateKey(k.id, {
-      available: true,
-      lastAssignedClient: null,
-      notes: null,
-    });
+  await updateKey(k.id, {
+    available: true,
+    lastAssignedTo: null,
+    notes: null,
+  });
+
 
     load();
   }
@@ -228,7 +311,6 @@ function KeyTable({
               <th className="text-left py-3 px-5">Estado</th>
               <th className="text-left py-3 px-5">Asignada a</th>
               <th className="text-left py-3 px-5">Tiempo de Uso</th>
-              <th className="py-3 px-5"></th>
             </tr>
           </thead>
           <tbody>
@@ -263,17 +345,6 @@ function KeyTable({
                 <td className="py-3 px-5">
                   {k.since ? timeFrom(k.since) : "-"}
                 </td>
-                <td className="py-3 px-5 text-right">
-                  {k.status === "ocupada" && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => onRelease(k.code)}
-                    >
-                      Liberar
-                    </Button>
-                  )}
-                </td>
               </tr>
             ))}
           </tbody>
@@ -285,10 +356,14 @@ function KeyTable({
 
 function timeFrom(iso: string) {
   const ms = Date.now() - new Date(iso).getTime();
-  const m = Math.floor(ms / 60000);
-  if (m < 1) return "Ahora";
-  if (m < 60) return `${m} min`;
-  const h = Math.floor(m / 60);
-  const r = m % 60;
-  return `${h} h ${r} min`;
+  if (!Number.isFinite(ms) || ms < 0) return "-";
+
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(h)}:${pad(m)}:${pad(s)}`; // 00:05:12
 }
+
