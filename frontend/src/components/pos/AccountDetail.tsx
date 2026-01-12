@@ -182,6 +182,11 @@ export default function AccountDetail({
     // ✅ llaves no se pagan (no tiene sentido registrar pago)
     if (c.kind === "Key") return;
 
+    if (c.total <= 0) {
+  throw new Error("No se puede registrar pago cuando el total es $0.00");
+}
+
+
     await addPayment(accountId, {
       method: form.method,
       amount: c.total,
@@ -472,31 +477,47 @@ export default function AccountDetail({
 
                         {/* ✅ llaves sin precio */}
                         <td className="py-3 px-3">
-                          {isKey ? <span className="text-neutral-400">—</span> : `$${c.amount.toFixed(2)}`}
-                        </td>
-                        <td className="py-3 px-3 font-semibold">
-                          {isKey ? <span className="text-neutral-400">—</span> : `$${c.total.toFixed(2)}`}
+                          {isKey || c.total <= 0 ? (
+                            <span className="text-neutral-400">—</span>
+                          ) : (
+                            `$${c.amount.toFixed(2)}`
+                          )}
                         </td>
 
+                        <td className="py-3 px-3 font-semibold">
+                          {isKey || c.total <= 0 ? (
+                            <span className="text-neutral-400">—</span>
+                          ) : (
+                            `$${c.total.toFixed(2)}`
+                          )}
+                        </td>
                         <td className="py-3 px-3">
                           {c.status === "Pagado" ? (
                             <span className="inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800">
                               {paidMethod ? `Pagado (${paidMethod})` : "Pagado"}
                             </span>
+                          ) : c.total <= 0 ? (
+                            <span className="text-xs text-neutral-400">—</span> // o "Sin cobro"
                           ) : (
                             <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800">
                               Pendiente
                             </span>
                           )}
                         </td>
-
                         <td className="py-3 px-3 text-right">
                           {/* ✅ NO registrar pago para llaves */}
                           {summary.status === "Abierta" && c.status === "Pendiente" && !isKey ? (
                             <button
-                              onClick={() => setPayChargeId(c.id)}
-                              disabled={!posEnabled}
-                              className="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                              onClick={() => {
+                                if (c.total <= 0) return; // ✅ no abrir modal si total es 0
+                                setPayChargeId(c.id);
+                              }}
+                              disabled={!posEnabled || c.total <= 0} // ✅ bloquea si total 0
+                              className={
+                                "inline-flex items-center justify-center rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-50 " +
+                                (c.total <= 0 ? "bg-neutral-300 cursor-not-allowed" : "bg-emerald-600 hover:bg-emerald-700")
+                              }
+                              title={c.total <= 0 ? "No se puede pagar un cargo con total $0.00" : undefined}
                             >
                               Registrar pago
                             </button>
@@ -691,7 +712,11 @@ function PayChargeModal({
           </button>
           <button
             onClick={() => onConfirm(method)}
-            className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700"
+            disabled={charge.total <= 0}
+            className={
+              "px-4 py-2 rounded-xl text-white font-semibold disabled:opacity-50 " +
+              (charge.total <= 0 ? "bg-neutral-300 cursor-not-allowed" : "bg-emerald-600 hover:bg-emerald-700")
+            }
           >
             Confirmar pago
           </button>

@@ -6,7 +6,7 @@ import { PRICES, openAccount, addCharge } from "@/lib/api/accounts";
 
 import { listClients, createClient, UpsertClientInput } from "@/lib/api/clients";
 import { Client } from "@/types/client";
-import { SelectedKey, PosEntryType, KeyGender } from "@/types/pos";
+import { SelectedKey, KeyGender } from "@/types/pos";
 
 // 🔽 backend real de llaves
 import { listKeys, updateKey } from "@/lib/apiv2/keys";
@@ -157,11 +157,16 @@ export default function CreateAccountModal({
   const [allClients, setAllClients] = useState<Client[]>([]);
   const [client, setClient] = useState<Client | null>(null);
 
-  const [entryType, setEntryType] = useState<PosEntryType>("normal");
+  // ✅ Entradas normales (siempre disponibles)
   const [counts, setCounts] = useState({ A: 0, N: 0, TE: 0, D: 0, AC: 0 });
 
-  const peopleCount = counts.A + counts.N + counts.TE + counts.D + counts.AC;
+  // ✅ Tarjeta 10 pases (se puede combinar con normal)
+  const [usePassCard, setUsePassCard] = useState(false);
+  const [passPeople, setPassPeople] = useState(0);
   const [cardState, setCardState] = useState<AccessCardState>(emptyCardState);
+
+  const normalPeople = counts.A + counts.N + counts.TE + counts.D + counts.AC;
+  const totalPeople = normalPeople + (usePassCard ? passPeople : 0);
 
   const [keyGender, setKeyGender] = useState<KeyGender>("H");
   const [availableKeys, setAvailableKeys] = useState<number[]>([]);
@@ -258,7 +263,6 @@ export default function CreateAccountModal({
   }, [useBarOrder, selectedBarProductId]);
 
   const entriesSubtotal = useMemo(() => {
-    if (entryType === "pass") return 0;
     return +(
       counts.A * PRICES.A +
       counts.N * PRICES.N +
@@ -266,14 +270,15 @@ export default function CreateAccountModal({
       counts.D * PRICES.D +
       counts.AC * PRICES.AC
     ).toFixed(2);
-  }, [entryType, counts]);
+  }, [counts]);
 
   const passSale = useMemo(() => {
-    if (entryType !== "pass") return 0;
+    if (!usePassCard) return 0;
+    if (passPeople <= 0) return 0;
     if (cardState.createdNow) return PRICES.PASS;
     if (!cardState.exists && cardState.willCreateIfMissing) return PRICES.PASS;
     return 0;
-  }, [entryType, cardState.createdNow, cardState.exists, cardState.willCreateIfMissing]);
+  }, [usePassCard, passPeople, cardState.createdNow, cardState.exists, cardState.willCreateIfMissing]);
 
   const keysSubtotal = 0;
   const parkingSubtotal = 0;
@@ -345,14 +350,14 @@ export default function CreateAccountModal({
       const uses = Number((created as any)?.card?.uses);
       const remaining = Number.isFinite(uses)
         ? uses
-        : Number.isFinite(Number(created.remaining))
-        ? Number(created.remaining)
+        : Number.isFinite(Number((created as any)?.remaining))
+        ? Number((created as any)?.remaining)
         : 10;
 
       setCardState({
         loading: false,
         exists: true,
-        cardId: created.card.id,
+        cardId: (created as any).card.id,
         remaining,
         willCreateIfMissing: true,
         createdNow: true,
@@ -374,18 +379,19 @@ export default function CreateAccountModal({
       const holder = await ensureClient(client, query);
       const holderName = holder.name;
 
-      if (entryType === "pass") {
-        if (peopleCount <= 0) throw new Error("Agrega al menos 1 persona para continuar.");
-      } else {
-        if (peopleCount <= 0 && selectedKeys.length === 0) {
-          throw new Error("Agrega al menos 1 persona o selecciona llaves para continuar.");
-        }
+      // ✅ Validación: puede ser normal + tarjeta + llaves (combinado)
+      const hasSomething =
+        normalPeople > 0 || (usePassCard && passPeople > 0) || selectedKeys.length > 0;
+
+      if (!hasSomething) {
+        throw new Error("Agrega al menos 1 persona (normal o tarjeta) o selecciona llaves para continuar.");
       }
 
+      // ✅ Validar tarjeta si aplica (solo para quienes entran con tarjeta)
       let willChargePassSale = false;
       let remainingToValidate = 0;
 
-      if (entryType === "pass") {
+      if (usePassCard && passPeople > 0) {
         if (cardState.exists && cardState.cardId) {
           remainingToValidate = cardState.remaining;
           if (cardState.createdNow) willChargePassSale = true;
@@ -406,9 +412,7 @@ export default function CreateAccountModal({
             }));
           } else {
             if (!cardState.willCreateIfMissing) {
-              throw new Error(
-                "No existe tarjeta. Marca 'Crear y cobrar si no existe' para continuar."
-              );
+              throw new Error("No existe tarjeta. Marca 'Crear y cobrar si no existe' para continuar.");
             }
 
             const created = await createAccessCardForHolder(holderName, 10);
@@ -417,14 +421,14 @@ export default function CreateAccountModal({
             const uses = Number((created as any)?.card?.uses);
             remainingToValidate = Number.isFinite(uses)
               ? uses
-              : Number.isFinite(Number(created.remaining))
-              ? Number(created.remaining)
+              : Number.isFinite(Number((created as any)?.remaining))
+              ? Number((created as any)?.remaining)
               : 10;
 
             setCardState((s) => ({
               ...s,
               exists: true,
-              cardId: created.card.id,
+              cardId: (created as any).card.id,
               remaining: remainingToValidate,
               willCreateIfMissing: true,
               createdNow: true,
@@ -433,25 +437,48 @@ export default function CreateAccountModal({
           }
         }
 
-        if (remainingToValidate < peopleCount) {
+        if (remainingToValidate < passPeople) {
           throw new Error(`Tarjeta sin usos suficientes. Restantes: ${remainingToValidate}`);
         }
       }
 
       const keysToAttach: SelectedKey[] = selectedKeys.map((k) => ({ ...k, duration }));
 
+      // ✅ Abrir cuenta SIEMPRE como "normal" (para mantener compatibilidad),
+      // pero peopleCount incluye total (normal + tarjeta).
       const account = await openAccount({
         clientId: holder.id,
         clientName: holder.name,
         gender: "M",
         entryType: "normal",
-        counts: entryType === "normal" ? counts : undefined,
-        peopleCount,
+        counts: normalPeople > 0 ? counts : undefined,
+        peopleCount: totalPeople,
         keys: keysToAttach.length > 0 ? { items: keysToAttach, duration } : undefined,
         createPassIfMissing: false,
       });
 
-      if (entryType === "pass" && willChargePassSale) {
+      // ✅ Registrar cargos por entradas normales (se listan por tipo)
+      // (Así en "Cargos" verás Adulto/ Niño/ etc con sus totales)
+      const addEntryCharge = async (concept: string, qty: number, unit: number) => {
+        if (qty <= 0) return;
+        await addCharge(account.id, {
+          kind: "Normal",
+          concept,
+          qty,
+          amount: unit,
+        });
+      };
+
+      await Promise.all([
+        addEntryCharge("Entrada adulto", counts.A, PRICES.A),
+        addEntryCharge("Entrada niño", counts.N, PRICES.N),
+        addEntryCharge("Entrada 3ra edad", counts.TE, PRICES.TE),
+        addEntryCharge("Entrada discapacidad", counts.D, PRICES.D),
+        addEntryCharge("Entrada acompañante", counts.AC, PRICES.AC),
+      ]);
+
+      // ✅ Cargo por venta de tarjeta si se creó en esta transacción
+      if (usePassCard && passPeople > 0 && willChargePassSale) {
         await addCharge(account.id, {
           kind: "Normal",
           concept: "Tarjeta 10 pases (venta)",
@@ -460,9 +487,18 @@ export default function CreateAccountModal({
         });
       }
 
-      if (entryType === "pass") {
-        await consumeAccessCardByHolder(holderName, peopleCount);
-        setCardState((s) => ({ ...s, remaining: Math.max(0, (s.remaining ?? 0) - peopleCount) }));
+      // ✅ Consumir usos (solo las personas que entran por tarjeta)
+      if (usePassCard && passPeople > 0) {
+        await consumeAccessCardByHolder(holderName, passPeople);
+        setCardState((s) => ({ ...s, remaining: Math.max(0, (s.remaining ?? 0) - passPeople) }));
+
+        // (opcional pero útil): dejar registro en cargos aunque sea $0
+        await addCharge(account.id, {
+          kind: "Normal",
+          concept: "Tarjeta 10 pases (uso)",
+          qty: passPeople,
+          amount: 0,
+        });
       }
 
       if (selectedKeys.length) {
@@ -496,7 +532,7 @@ export default function CreateAccountModal({
           barItems.map((item) =>
             addCharge(account.id, {
               kind: "Normal",
-              concept: `Bar: ${item.name}`,
+              concept: `${item.name}`,
               qty: item.qty,
               amount: item.unitPrice,
             })
@@ -515,7 +551,7 @@ export default function CreateAccountModal({
 
   const canSubmit =
     (client || query.trim().length > 0) &&
-    (entryType === "pass" ? peopleCount > 0 : peopleCount > 0 || selectedKeys.length > 0);
+    (normalPeople > 0 || (usePassCard && passPeople > 0) || selectedKeys.length > 0);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
@@ -571,60 +607,61 @@ export default function CreateAccountModal({
             )}
           </div>
 
-          {/* Tipo de entrada */}
-          <div className="mt-5">
-            <label className="text-sm font-medium text-neutral-900">Tipo de entrada</label>
-            <div className="mt-2 flex flex-wrap gap-4">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="radio"
-                  checked={entryType === "normal"}
-                  onChange={() => {
-                    setEntryType("normal");
-                    setCardState(emptyCardState);
-                  }}
+          {/* Entradas normales */}
+          <div className="mt-5 rounded-2xl border border-neutral-200 overflow-hidden">
+            <div className="px-4 py-3 border-b border-neutral-200 font-semibold">
+              Entradas (normal)
+            </div>
+            <div className="p-4 grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              {(["A", "N", "TE", "D", "AC"] as const).map((k) => (
+                <Counter
+                  key={k}
+                  label={labelOf(k)}
+                  price={priceOf(k)}
+                  value={(counts as any)[k]}
+                  onChange={(v) => setCount(k, v)}
                 />
-                <span>Normal</span>
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="radio" checked={entryType === "pass"} onChange={() => setEntryType("pass")} />
-                <span>Tarjeta 10 pases</span>
-              </label>
+              ))}
             </div>
           </div>
 
-          {/* Entradas */}
+          {/* Tarjeta 10 pases (opcional y combinable) */}
           <div className="mt-5 rounded-2xl border border-neutral-200 overflow-hidden">
-            <div className="px-4 py-3 border-b border-neutral-200 font-semibold">Entradas</div>
+            <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between gap-3">
+              <div className="font-semibold">Tarjeta 10 pases</div>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={usePassCard}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setUsePassCard(on);
+                    if (!on) {
+                      setPassPeople(0);
+                      setCardState(emptyCardState);
+                    }
+                  }}
+                />
+                <span>Usar tarjeta en este grupo</span>
+              </label>
+            </div>
 
-            {entryType === "normal" ? (
-              <div className="p-4 grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                {(["A", "N", "TE", "D", "AC"] as const).map((k) => (
-                  <Counter
-                    key={k}
-                    label={labelOf(k)}
-                    price={priceOf(k)}
-                    value={(counts as any)[k]}
-                    onChange={(v) => setCount(k, v)}
-                  />
-                ))}
-              </div>
-            ) : (
+            {usePassCard ? (
               <div className="p-4 grid lg:grid-cols-3 gap-4">
                 <div className="rounded-xl border border-neutral-200 p-3">
-                  <div className="text-sm font-medium">Personas que ingresan</div>
+                  <div className="text-sm font-medium">Personas que entran con tarjeta</div>
                   <input
                     type="number"
-                    min={1}
+                    min={0}
                     className="mt-2 border border-neutral-200 rounded-xl px-3 py-2 w-40"
-                    value={peopleCount}
+                    value={passPeople}
                     onChange={(e) => {
                       const v = Math.max(0, parseInt(e.target.value || "0", 10));
-                      setCounts({ A: v, N: 0, TE: 0, D: 0, AC: 0 });
+                      setPassPeople(v);
                     }}
                   />
                   <p className="mt-2 text-xs text-neutral-500">
-                    Se descontarán {peopleCount} usos de la tarjeta.
+                    Se descontarán {passPeople} usos de la tarjeta.
                   </p>
                 </div>
 
@@ -686,6 +723,10 @@ export default function CreateAccountModal({
                     )}
                   </div>
                 </div>
+              </div>
+            ) : (
+              <div className="p-4 text-sm text-neutral-500">
+                Activa esta sección si parte del grupo entra usando tarjeta (se puede combinar con entradas normales).
               </div>
             )}
           </div>
@@ -752,7 +793,10 @@ export default function CreateAccountModal({
                     .slice()
                     .sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number)
                     .map((k) => (
-                      <span key={k.keyId} className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-sm">
+                      <span
+                        key={k.keyId}
+                        className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-sm"
+                      >
                         {k.number}
                         {k.gender}
                         <button
@@ -787,7 +831,11 @@ export default function CreateAccountModal({
             <div className="flex items-center justify-between gap-3">
               <div className="text-sm font-medium">Consumo de bar inicial</div>
               <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={useBarOrder} onChange={(e) => setUseBarOrder(e.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={useBarOrder}
+                  onChange={(e) => setUseBarOrder(e.target.checked)}
+                />
                 <span>Agregar productos de bar</span>
               </label>
             </div>
@@ -901,9 +949,10 @@ export default function CreateAccountModal({
           </div>
 
           {/* Totales */}
-          <div className="grid md:grid-cols-3 gap-3 mt-5">
-            <TotalCard label="Subtotal (entradas)" value={entryType === "normal" ? entriesSubtotal : 0} />
-            <TotalCard label="Venta de pase" value={passSale} />
+          <div className="grid md:grid-cols-4 gap-3 mt-5">
+            <TotalCard label="Subtotal (normal)" value={entriesSubtotal} />
+            <TotalCard label="Venta tarjeta (si aplica)" value={passSale} />
+            <TotalCard label="Personas (total)" valueNumber={totalPeople} />
             <TotalCard label="Total" value={total} highlight />
           </div>
         </div>
@@ -987,32 +1036,41 @@ function Counter({
 function TotalCard({
   label,
   value,
+  valueNumber,
   highlight,
 }: {
   label: string;
-  value: number;
+  value?: number;
+  valueNumber?: number;
   highlight?: boolean;
 }) {
+  const isNumberCard = typeof valueNumber === "number";
   return (
     <div className={`rounded-xl border border-neutral-200 p-4 ${highlight ? "bg-emerald-50" : "bg-white"}`}>
       <div className="text-xs font-medium text-neutral-500">{label}</div>
-      <div className={`mt-1 text-2xl font-semibold ${highlight ? "text-emerald-700" : "text-neutral-900"}`}>
-        ${value.toFixed(2)}
-      </div>
+      {isNumberCard ? (
+        <div className={`mt-1 text-2xl font-semibold ${highlight ? "text-emerald-700" : "text-neutral-900"}`}>
+          {valueNumber}
+        </div>
+      ) : (
+        <div className={`mt-1 text-2xl font-semibold ${highlight ? "text-emerald-700" : "text-neutral-900"}`}>
+          ${(value ?? 0).toFixed(2)}
+        </div>
+      )}
     </div>
   );
 }
 
 function labelOf(k: "A" | "N" | "TE" | "D" | "AC") {
   return k === "A"
-    ? "Adulto (A)"
+    ? "Adulto"
     : k === "N"
-    ? "Niño (N)"
+    ? "Niño"
     : k === "TE"
-    ? "3ra edad (TE)"
+    ? "3ra edad"
     : k === "D"
-    ? "Discapacidad (D)"
-    : "Acompañante (AC)";
+    ? "Discapacidad"
+    : "Acompañante";
 }
 function priceOf(k: "A" | "N" | "TE" | "D" | "AC") {
   return k === "A"
