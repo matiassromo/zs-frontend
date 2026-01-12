@@ -1,7 +1,8 @@
+// src/app/facturacion/caja-diaria/page.tsx
 "use client";
 
 import React from "react";
-import type { CashMove, Cashbox, PaymentSummary } from "@/types/cashbox";
+import type { CashMove, Cashbox } from "@/types/cashbox";
 import {
   toDateKey,
   getCashboxByDate,
@@ -13,15 +14,36 @@ import {
   listPaymentMoves,
   mergeMoves,
   calcTotals,
-  summarizePayments,
   listCashboxDates,
 } from "@/lib/apiv2/cashbox";
+
 import { OpenCashDialog } from "@/components/cashbox/OpenCashDialog";
-import { MoveDialog } from "@/components/cashbox/MoveDialog.";
+import { MoveDialog } from "@/components/cashbox/MoveDialog";
 import { CloseCashDialog } from "@/components/cashbox/CloseCashDialog";
 
 function money(n: number) {
   return `$${n.toFixed(2)}`;
+}
+
+/* ----------------- POS LOCK (por fecha) -----------------
+   - Cerrar caja => locked=1 (POS bloqueado)
+   - Reabrir (solo si es HOY) => locked=0 (POS desbloqueado)
+---------------------------------------------------------- */
+const lockKey = (dateKey: string) => `zs:cashbox:locked:${dateKey}`;
+function isLocked(dateKey: string) {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(lockKey(dateKey)) === "1";
+}
+function setLocked(dateKey: string, locked: boolean) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(lockKey(dateKey), locked ? "1" : "0");
+}
+function emitCashboxChanged(dateKey: string) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("zs:cashbox-changed", { detail: { dateKey } }));
+}
+function isTodayKey(dateKey: string) {
+  return dateKey === toDateKey(new Date());
 }
 
 export default function CajaDiariaPage() {
@@ -39,6 +61,7 @@ export default function CajaDiariaPage() {
   const [openClose, setOpenClose] = React.useState(false);
 
   const [historyDates, setHistoryDates] = React.useState<string[]>([]);
+  const [locked, setLockedState] = React.useState(false);
 
   const refresh = React.useCallback(async () => {
     const cb = getCashboxByDate(dateKey);
@@ -48,6 +71,9 @@ export default function CajaDiariaPage() {
     setManualMoves(mm);
 
     setHistoryDates(listCashboxDates());
+
+    const lk = isLocked(dateKey);
+    setLockedState(lk);
 
     if (!cb) {
       setPaymentMoves([]);
@@ -61,7 +87,7 @@ export default function CajaDiariaPage() {
       const pm = await listPaymentMoves(dateKey);
       setPaymentMoves(pm);
     } catch (e: any) {
-      setErrorPayments(e?.message ?? "No se pudo cargar Payments.");
+      setErrorPayments(e?.message ?? "No se pudo cargar movimientos de pagos del POS.");
       setPaymentMoves([]);
     } finally {
       setLoadingPayments(false);
@@ -72,6 +98,16 @@ export default function CajaDiariaPage() {
     refresh();
   }, [refresh]);
 
+  // ✅ cuando POS registra pagos o caja cambia, refrescar (para reflejar ingresos del POS)
+  React.useEffect(() => {
+    function onCashboxChanged(e: any) {
+      const dk = e?.detail?.dateKey;
+      if (!dk || dk === dateKey) refresh();
+    }
+    window.addEventListener("zs:cashbox-changed", onCashboxChanged as any);
+    return () => window.removeEventListener("zs:cashbox-changed", onCashboxChanged as any);
+  }, [dateKey, refresh]);
+
   const allMoves = React.useMemo(() => mergeMoves(manualMoves, paymentMoves), [manualMoves, paymentMoves]);
 
   const totals = React.useMemo(() => {
@@ -80,16 +116,23 @@ export default function CajaDiariaPage() {
     return calcTotals(opening, allMoves, counted);
   }, [cashbox, allMoves]);
 
-  const paymentSummary: PaymentSummary[] = React.useMemo(() => summarizePayments(paymentMoves), [paymentMoves]);
-
   const isOpen = cashbox?.status === "Abierta";
+  const today = isTodayKey(dateKey);
+
+  // ✅ Reglas según tu flujo:
+  // - Solo puedes ABRIR / REABRIR si la fecha es HOY
+  // - Cerrar bloquea POS (locked=1)
+  // - Reabrir HOY desbloquea POS (locked=0)
+  const canOpenToday = today && (!cashbox || cashbox.status !== "Abierta") && !locked;
+  const canReopenToday = today && (!cashbox || cashbox.status !== "Abierta") && locked;
+  const canClose = !!cashbox && cashbox.status === "Abierta";
+  const canOperate = !!cashbox && cashbox.status === "Abierta" && !locked;
 
   return (
     <div className="p-6">
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-
           <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-500">
             <span>
               Fecha: <span className="font-medium text-slate-800">{dateKey}</span>
@@ -101,10 +144,29 @@ export default function CajaDiariaPage() {
                 {cashbox?.status ?? "Sin caja"}
               </span>
             </span>
+
+            {locked ? (
+              <>
+                <span className="text-slate-300">•</span>
+                <span className="font-medium text-rose-700">Día cerrado (POS bloqueado)</span>
+              </>
+            ) : null}
+
+            {!today ? (
+              <>
+                <span className="text-slate-300">•</span>
+                <span className="font-medium text-slate-600">Histórico (solo lectura)</span>
+              </>
+            ) : null}
+
             {isOpen && cashbox?.openedAt ? (
               <span className="text-slate-400">— desde {new Date(cashbox.openedAt).toLocaleTimeString()}</span>
             ) : null}
           </div>
+
+          {errorPayments ? (
+            <div className="mt-2 text-sm text-rose-700">{errorPayments}</div>
+          ) : null}
         </div>
 
         <div className="flex gap-2 items-center">
@@ -115,13 +177,27 @@ export default function CajaDiariaPage() {
             onChange={(e) => setDateKey(e.target.value)}
           />
 
-          {!cashbox || cashbox.status === "Cerrada" ? (
+          {/* ✅ Botón principal: Abrir / Reabrir / Cerrar */}
+          {isOpen ? (
+            <button
+              className="px-4 py-2 rounded-xl bg-slate-900 text-white disabled:opacity-50"
+              disabled={!canClose}
+              onClick={() => setOpenClose(true)}
+            >
+              Cerrar Caja
+            </button>
+          ) : canReopenToday ? (
             <button className="px-4 py-2 rounded-xl bg-slate-900 text-white" onClick={() => setOpenOpen(true)}>
-              Abrir Caja
+              Reabrir Caja
             </button>
           ) : (
-            <button className="px-4 py-2 rounded-xl bg-slate-900 text-white" onClick={() => setOpenClose(true)}>
-              Cerrar Caja
+            <button
+              className="px-4 py-2 rounded-xl bg-slate-900 text-white disabled:opacity-50"
+              disabled={!canOpenToday}
+              onClick={() => setOpenOpen(true)}
+              title={!today ? "Solo puedes abrir/reabrir la caja en el día de hoy" : locked ? "Día cerrado" : ""}
+            >
+              Abrir Caja
             </button>
           )}
 
@@ -143,68 +219,21 @@ export default function CajaDiariaPage() {
       <div className="mt-4 flex flex-wrap gap-2">
         <button
           className="px-4 py-2 rounded-full bg-blue-600 text-white disabled:opacity-50"
-          disabled={!isOpen}
+          disabled={!canOperate}
           onClick={() => setOpenIn(true)}
         >
           + Ingreso
         </button>
         <button
           className="px-4 py-2 rounded-full bg-orange-600 text-white disabled:opacity-50"
-          disabled={!isOpen}
+          disabled={!canOperate}
           onClick={() => setOpenOut(true)}
         >
           + Egreso
         </button>
       </div>
 
-      {/* Payments summary */}
-      <div className="mt-6 rounded-2xl border bg-white">
-        <div className="p-4 border-b flex items-center justify-between">
-          <div className="font-semibold">Resumen de pagos (Payments)</div>
-          <div className="text-xs text-slate-500">
-            {cashbox ? (
-              <>
-                {loadingPayments ? "Cargando..." : `Registros: ${paymentMoves.length}`}
-              </>
-            ) : (
-              "Abre la caja para ver pagos del día"
-            )}
-          </div>
-        </div>
-
-        {errorPayments ? <div className="px-4 pt-3 text-sm text-rose-700">{errorPayments}</div> : null}
-
-        {!cashbox ? (
-          <div className="p-4 text-sm text-slate-500">Sin caja para esta fecha.</div>
-        ) : paymentSummary.length === 0 ? (
-          <div className="p-4 text-sm text-slate-500">
-            Sin pagos detectados desde backend para este día (o el schema no coincide).
-          </div>
-        ) : (
-          <div className="p-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-slate-500">
-                <tr className="border-b">
-                  <th className="text-left py-2 px-3">Método / Banco</th>
-                  <th className="text-right py-2 px-3">Cantidad</th>
-                  <th className="text-right py-2 px-3">Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {paymentSummary.map((s) => (
-                  <tr key={s.key} className="border-b last:border-b-0">
-                    <td className="py-2 px-3">{s.label}</td>
-                    <td className="py-2 px-3 text-right">{s.count}</td>
-                    <td className="py-2 px-3 text-right font-medium">{money(s.amount)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Moves table */}
+      {/* Movimientos (incluye Payment del POS + Manual) */}
       <div className="mt-6 rounded-2xl border bg-white">
         <div className="p-4 border-b flex items-center justify-between">
           <div className="font-semibold">Movimientos</div>
@@ -259,7 +288,7 @@ export default function CajaDiariaPage() {
                     </td>
                     <td className="py-2 px-3 text-right font-medium">{money(m.amount)}</td>
                     <td className="py-2 px-3 text-right">
-                      {m.source === "Manual" && isOpen ? (
+                      {m.source === "Manual" && canOperate ? (
                         <button
                           className="px-3 py-1 rounded-lg border text-xs"
                           onClick={() => {
@@ -281,7 +310,7 @@ export default function CajaDiariaPage() {
         )}
       </div>
 
-      {/* Local history (cajas abiertas/cerradas guardadas en este navegador) */}
+      {/* Local history */}
       <div className="mt-6 rounded-2xl border bg-white">
         <div className="p-4 border-b flex items-center justify-between">
           <div className="font-semibold">Histórico local (cajas guardadas en este PC)</div>
@@ -313,7 +342,18 @@ export default function CajaDiariaPage() {
         open={openOpen}
         onClose={() => setOpenOpen(false)}
         onSubmit={(data) => {
+          // ✅ Solo hoy se puede abrir/reabrir
+          if (!isTodayKey(dateKey)) {
+            setOpenOpen(false);
+            return;
+          }
+
           openCashbox({ dateKey, openingAmount: data.openingAmount, openedBy: data.openedBy });
+
+          // ✅ Al abrir/reabrir: desbloquea POS
+          setLocked(dateKey, false);
+          emitCashboxChanged(dateKey);
+
           setOpenOpen(false);
           refresh();
         }}
@@ -324,7 +364,13 @@ export default function CajaDiariaPage() {
         type="Ingreso"
         onClose={() => setOpenIn(false)}
         onSubmit={(data) => {
-          addManualMove({ dateKey, type: "Ingreso", amount: data.amount, concept: data.concept, createdBy: data.createdBy });
+          addManualMove({
+            dateKey,
+            type: "Ingreso",
+            amount: data.amount,
+            concept: data.concept,
+            createdBy: data.createdBy,
+          });
           setOpenIn(false);
           setManualMoves(listManualMoves(dateKey));
         }}
@@ -335,7 +381,13 @@ export default function CajaDiariaPage() {
         type="Egreso"
         onClose={() => setOpenOut(false)}
         onSubmit={(data) => {
-          addManualMove({ dateKey, type: "Egreso", amount: data.amount, concept: data.concept, createdBy: data.createdBy });
+          addManualMove({
+            dateKey,
+            type: "Egreso",
+            amount: data.amount,
+            concept: data.concept,
+            createdBy: data.createdBy,
+          });
           setOpenOut(false);
           setManualMoves(listManualMoves(dateKey));
         }}
@@ -347,6 +399,11 @@ export default function CajaDiariaPage() {
         onClose={() => setOpenClose(false)}
         onSubmit={(data) => {
           closeCashbox({ dateKey, countedCash: data.countedCash, closedBy: data.closedBy, note: data.note });
+
+          // ✅ Cerrar => bloquea POS del día (pero podrás reabrir HOY)
+          setLocked(dateKey, true);
+          emitCashboxChanged(dateKey);
+
           setOpenClose(false);
           refresh();
         }}

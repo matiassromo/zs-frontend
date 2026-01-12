@@ -1,9 +1,11 @@
+// src/lib/apiv2/cashbox.ts
 import { http } from "./http";
 import type { CashMove, CashMoveType, Cashbox, CashboxTotals, PaymentSummary } from "@/types/cashbox";
 
 const LS_PREFIX = "zs.cashbox.v1";
 const LS_BOXES_KEY = `${LS_PREFIX}.boxes`; // record por dateKey
 const LS_MANUAL_MOVES_KEY = `${LS_PREFIX}.manualMoves`; // record por dateKey -> CashMove[]
+const LS_POS_PAY_MOVES_KEY = `${LS_PREFIX}.posPayMoves`; // ✅ record por dateKey -> CashMove[] (pagos del POS)
 
 function uid() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -48,6 +50,7 @@ function writeJson<T>(key: string, value: T) {
 
 type BoxesStore = Record<string, Cashbox>;
 type ManualMovesStore = Record<string, CashMove[]>;
+type PosPayMovesStore = Record<string, CashMove[]>;
 
 function readBoxes(): BoxesStore {
   return readJson<BoxesStore>(LS_BOXES_KEY) ?? {};
@@ -61,6 +64,14 @@ function readManualMovesStore(): ManualMovesStore {
 }
 function writeManualMovesStore(store: ManualMovesStore) {
   writeJson(LS_MANUAL_MOVES_KEY, store);
+}
+
+// ✅ Pagos capturados desde el POS (local)
+function readPosPayMovesStore(): PosPayMovesStore {
+  return readJson<PosPayMovesStore>(LS_POS_PAY_MOVES_KEY) ?? {};
+}
+function writePosPayMovesStore(store: PosPayMovesStore) {
+  writeJson(LS_POS_PAY_MOVES_KEY, store);
 }
 
 export function getCashboxByDate(dateKey: string): Cashbox | null {
@@ -87,10 +98,16 @@ export function openCashbox(params: { dateKey: string; openingAmount: number; op
   boxes[params.dateKey] = box;
   writeBoxes(boxes);
 
+  // asegurar stores
   const mm = readManualMovesStore();
   if (!mm[params.dateKey]) {
     mm[params.dateKey] = [];
     writeManualMovesStore(mm);
+  }
+  const pm = readPosPayMovesStore();
+  if (!pm[params.dateKey]) {
+    pm[params.dateKey] = [];
+    writePosPayMovesStore(pm);
   }
 
   return box;
@@ -162,6 +179,55 @@ export function deleteManualMove(dateKey: string, id: string) {
   writeManualMovesStore(store);
 }
 
+/* =======================
+   ✅ PAGOS DESDE EL POS
+   ======================= */
+
+export function addPosPaymentMove(params: {
+  dateKey: string;
+  amount: number;
+  method: "Efectivo" | "Transferencia";
+  concept: string;
+  createdBy?: string;
+  ref?: { kind: string; id: string };
+  createdAt?: string;
+}) {
+  const box = getCashboxByDate(params.dateKey);
+  if (!box || box.status !== "Abierta") throw new Error("Caja no está abierta para esa fecha.");
+
+  const amount = Number(params.amount);
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error("Monto inválido.");
+
+  const move: CashMove = {
+    id: `pospay_${uid()}`,
+    dateKey: params.dateKey,
+    type: "Ingreso",
+    source: "Payment",
+    concept: params.concept?.trim() || `Pago (${params.method})`,
+    amount,
+    createdAt: params.createdAt ?? new Date().toISOString(),
+    createdBy: params.createdBy ?? "pos",
+    ref: params.ref,
+    payment: {
+      paymentType: params.method,
+      bankName: params.method === "Transferencia" ? "Transferencia" : "Efectivo",
+    },
+  } as any;
+
+  const store = readPosPayMovesStore();
+  const arr = store[params.dateKey] ?? [];
+  arr.unshift(move);
+  store[params.dateKey] = arr;
+  writePosPayMovesStore(store);
+
+  return move;
+}
+
+export function listPosPaymentMoves(dateKey: string): CashMove[] {
+  const store = readPosPayMovesStore();
+  return store[dateKey] ?? [];
+}
+
 /** Tu enum PaymentType en Swagger es 0/1. Mapeo a texto. Ajusta si tu backend define otra cosa. */
 function paymentTypeLabel(type: unknown): string {
   const n = typeof type === "number" ? type : Number(type);
@@ -189,38 +255,36 @@ function paymentDateISO(p: any): string | null {
 }
 
 /**
- * Lee pagos del backend y los transforma a movimientos automáticos.
- * Basado en tu Swagger: total, type, transactionId.
- *
- * IMPORTANTE:
- * - Para histórico por fecha, GET /api/Payments debe devolver una fecha (createdAt/paidAt/etc).
- * - Si NO devuelve fecha, se ignorarán (porque no hay forma de saber a qué día pertenecen).
+ * Lee pagos del backend y/o local (POS).
+ * ✅ PRIORIDAD: local POS (siempre funciona)
+ * ✅ BACKEND: se intenta si trae fecha; si no trae, se omite
  */
 export async function listPaymentMoves(dateKey: string): Promise<CashMove[]> {
   const box = getCashboxByDate(dateKey);
   if (!box) return [];
 
+  // 1) pagos del POS guardados localmente
+  const local = listPosPaymentMoves(dateKey);
+
+  // 2) intentar backend (opcional)
   const { fromIso, toIso } = dayRangeISO(dateKey);
 
   let pays: any[] = [];
   try {
     pays = await http<any[]>("/api/Payments");
   } catch {
-    return [];
+    // si falla backend, igual devolvemos local
+    return [...local].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }
 
-  const out: CashMove[] = [];
+  const backendMoves: CashMove[] = [];
 
   for (const p of Array.isArray(pays) ? pays : []) {
-    // monto exacto según tu swagger
     const amountNum = Number(p.total);
     if (!Number.isFinite(amountNum) || amountNum === 0) continue;
 
     const iso = paymentDateISO(p);
-    if (!iso) {
-      // sin fecha no se puede histórico por día => se omite
-      continue;
-    }
+    if (!iso) continue; // backend sin fecha => no histórico
 
     if (iso < fromIso || iso > toIso) continue;
 
@@ -236,22 +300,29 @@ export async function listPaymentMoves(dateKey: string): Promise<CashMove[]> {
       createdAt: iso,
       createdBy: p.createdBy ?? p.user ?? "system",
       ref: { kind: "Payment", id: p.id ?? "unknown" },
-      payment: {
-        paymentType: typeLabel,
-        // bankName/reference NO existen en tu contrato actual
-      },
-    };
+      payment: { paymentType: typeLabel },
+    } as any;
 
-    // referencia a transacción si viene en el GET (en request dto viene seguro)
     if (p.transactionId) {
       move.concept = `Pago (${typeLabel}) — Tx ${String(p.transactionId).slice(0, 8)}`;
     }
 
-    out.push(move);
+    backendMoves.push(move);
   }
 
-  out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-  return out;
+  // 3) merge local + backend (evitar duplicados por ref.id si coincide)
+  const seen = new Set<string>();
+  const merged: CashMove[] = [];
+
+  for (const m of [...local, ...backendMoves]) {
+    const key = (m.ref?.id ? `${m.ref.kind}:${m.ref.id}` : m.id) as string;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(m);
+  }
+
+  merged.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  return merged;
 }
 
 export function mergeMoves(manual: CashMove[], payments: CashMove[]): CashMove[] {
@@ -286,13 +357,12 @@ export function calcTotals(openingAmount: number, moves: CashMove[], countedCash
   return totals;
 }
 
-/** Resumen por método (Efectivo/Transferencia). Banco no existe aún en el contrato. */
+/** Resumen por método (Efectivo/Transferencia). */
 export function summarizePayments(moves: CashMove[]): PaymentSummary[] {
   const map = new Map<string, PaymentSummary>();
 
   for (const m of moves) {
     if (m.source !== "Payment") continue;
-
     const pt = (m.payment?.paymentType ?? "Desconocido").trim();
     const key = pt;
     const label = pt;

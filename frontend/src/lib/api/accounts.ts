@@ -52,7 +52,6 @@ export type UpdateAccountInput = Partial<{
   gender: "M" | "F";
   requiresParking: boolean;
 
-  // contadores de entradas
   people: {
     adult: number;
     child: number;
@@ -61,10 +60,8 @@ export type UpdateAccountInput = Partial<{
     ac: number;
   };
 
-  // llaves asignadas en la cuenta (lo que quede seleccionado al guardar)
   keys: { gender: "H" | "M"; number: number }[];
 }>;
-
 
 type PassRecord = {
   id: string;
@@ -174,16 +171,9 @@ export async function listPayments(id: string) {
 }
 
 /* ------------------ NUEVO: editar cuenta ------------------ */
-/**
- * Permite editar datos base de una cuenta ABIERTA.
- * Por ahora: clientName, gender, entryType, requiresParking, keys.
- * Regla: si está Cerrada -> error.
- */
 export async function updateAccount(
   accountId: string,
-  input: Partial<
-    Pick<PosAccount, "clientName" | "gender" | "entryType" | "requiresParking" | "keys">
-  >
+  input: Partial<Pick<PosAccount, "clientName" | "gender" | "entryType" | "requiresParking" | "keys">>
 ): Promise<PosAccount> {
   const s = load();
   const idx = s.accounts.findIndex((a) => a.id === accountId);
@@ -203,7 +193,6 @@ export async function updateAccount(
 }
 
 /* ------------------ Cargos / Pagos ------------------ */
-
 export async function addCharge(
   accountId: string,
   input: { kind: "Normal" | "Pase" | "Key"; concept: string; qty: number; amount: number }
@@ -262,8 +251,7 @@ export async function markChargePaid(accountId: string, chargeId: string) {
   }
 }
 
-/* ------------------ NUEVO: editar/eliminar cargo (cuenta abierta) ------------------ */
-
+/* ------------------ editar/eliminar cargo (cuenta abierta) ------------------ */
 export async function updateCharge(
   accountId: string,
   chargeId: string,
@@ -314,11 +302,7 @@ export async function deleteCharge(accountId: string, chargeId: string) {
   save(s);
 }
 
-/* ------------------ NUEVO: llaves mutables en cuenta (local store) ------------------ */
-/**
- * Guarda en la cuenta (store local) el set actual de llaves.
- * OJO: sincronizar backend real de llaves lo haces desde el componente (ya lo hicimos).
- */
+/* ------------------ llaves mutables en cuenta (local store) ------------------ */
 export async function setAccountKeys(
   accountId: string,
   input: { items: SelectedKey[]; duration: "1H" | "8H" | "2M" } | undefined
@@ -351,7 +335,7 @@ export async function closeAccount(id: string): Promise<PosAccount | undefined> 
 }
 
 /**
- * Imprime comprobante en impresora POS (ticket) con entrada/salida y detalle.
+ * Imprime comprobante POS (solo cliente + cargos sin llaves + subtotal/total)
  */
 export function printAccountReceipt(accountId: string) {
   if (isSSR()) return;
@@ -365,43 +349,33 @@ export function printAccountReceipt(accountId: string) {
 
   const charges = s.chargesByAccount[accountId] ?? [];
   const payments = s.paymentsByAccount[accountId] ?? [];
-  const totalCargos = charges.reduce((ac, c) => ac + c.total, 0);
-  const totalPagos = payments.reduce((ac, p) => ac + p.amount, 0);
-  const saldo = totalCargos - totalPagos;
 
-  const opened = new Date(acc.openedAt);
-  const closed = acc.closedAt ? new Date(acc.closedAt) : new Date();
+  // ✅ quitar llaves del recibo
+  const printableCharges = charges.filter((c) => c.kind !== "Key");
 
-  const fmt = new Intl.DateTimeFormat("es-EC", {
-    dateStyle: "short",
-    timeStyle: "short",
-  });
+  // ✅ subtotal = cargos sin llaves
+  const subtotal = printableCharges.reduce((ac, c) => ac + c.total, 0);
 
-  const openedStr = fmt.format(opened);
-  const closedStr = fmt.format(closed);
+  // ✅ total = pagos consolidados (sin detallar método)
+  const total = payments.reduce((ac, p) => ac + p.amount, 0);
 
   const win = window.open("", "_blank", "width=320,height=600");
   if (!win) return;
 
-  const chargesRows = charges
+  function cleanConcept(v: string) {
+  return String(v ?? "")
+    .replace(/^bar:\s*/i, "")          // quita "Bar: "
+    .replace(/\s*\(\s*[AN]\s*\)\s*$/i, "") // quita "(A)" o "(N)" al final
+    .trim();
+}
+
+    const chargesRows = printableCharges
     .map(
       (c) => `
       <tr>
-        <td>${new Date(c.createdAt).toLocaleTimeString("es-EC", { hour: "2-digit", minute: "2-digit" })}</td>
-        <td>${c.concept}</td>
+        <td class="concept">${escapeHtml(cleanConcept(c.concept))}</td>
         <td class="right">${c.qty}</td>
         <td class="right">$${c.total.toFixed(2)}</td>
-      </tr>`
-    )
-    .join("");
-
-  const paymentsRows = payments
-    .map(
-      (p) => `
-      <tr>
-        <td>${new Date(p.createdAt).toLocaleTimeString("es-EC", { hour: "2-digit", minute: "2-digit" })}</td>
-        <td>${p.method}</td>
-        <td class="right">$${p.amount.toFixed(2)}</td>
       </tr>`
     )
     .join("");
@@ -413,66 +387,99 @@ export function printAccountReceipt(accountId: string) {
   <meta charset="utf-8" />
   <title>Comprobante</title>
   <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-size: 11px;
-      padding: 8px;
-      margin: 0;
-    }
+    @page { margin: 8mm; }
+    html, body { margin:0; padding:0; background:#fff; color:#111; }
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace; font-size: 11px; }
+    .ticket { width: 320px; margin: 0 auto; }
     .center { text-align: center; }
-    .bold { font-weight: 600; }
-    .mt { margin-top: 8px; }
-    .line { border-top: 1px dashed #000; margin: 6px 0; }
-    table { width: 100%; border-collapse: collapse; }
-    td { font-size: 11px; padding: 2px 0; }
     .right { text-align: right; }
+    .muted { color:#555; }
+    .bold { font-weight: 700; }
+    .line { border-top: 1px dashed #111; margin: 8px 0; }
+    .block { margin: 6px 0; }
+    .logo { display:block; margin: 0 auto 6px auto; width: 210px; max-width: 100%; }
+    .title { font-size: 14px; font-weight: 800; letter-spacing: .4px; }
+    .subtitle { font-size: 11px; }
+    .meta { margin-top: 6px; }
+    .row { display:flex; gap:10px; justify-content: space-between; }
+    .row > div:first-child { color:#333; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { padding: 3px 0; vertical-align: top; }
+    thead th { font-size: 10px; color:#444; font-weight: 700; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+    tbody td { font-size: 11px; }
+    .col-cant { width: 44px; }
+    .col-total { width: 70px; }
+    .concept { padding-right: 6px; }
+    .totals .row { margin: 2px 0; }
+    .grand { font-size: 12px; }
+    .footer { margin-top: 10px; }
+    .small { font-size: 10px; }
+    @media print { .no-print { display:none; } }
   </style>
 </head>
 <body>
-  <div class="center bold">ZERO STRESS</div>
-  <div class="center">Comprobante de consumo</div>
-  <div class="line"></div>
-  <div>ID cuenta: ${acc.id}</div>
-  <div>Cliente: ${acc.clientName}</div>
-  <div>Entrada: ${openedStr}</div>
-  <div>Salida: ${closedStr}</div>
-  <div class="line"></div>
-  <div class="bold">Cargos</div>
-  <table>
-    <thead>
-      <tr>
-        <td>Hr</td>
-        <td>Concepto</td>
-        <td class="right">Cant</td>
-        <td class="right">Total</td>
-      </tr>
-    </thead>
-    <tbody>
-      ${chargesRows || `<tr><td colspan="4">Sin cargos</td></tr>`}
-    </tbody>
-  </table>
-  <div class="line"></div>
-  <div class="bold">Pagos</div>
-  <table>
-    <thead>
-      <tr>
-        <td>Hr</td>
-        <td>Método</td>
-        <td class="right">Monto</td>
-      </tr>
-    </thead>
-    <tbody>
-      ${paymentsRows || `<tr><td colspan="3">Sin pagos</td></tr>`}
-    </tbody>
-  </table>
-  <div class="line"></div>
-  <div>Total cargos: $${totalCargos.toFixed(2)}</div>
-  <div>Total pagos: $${totalPagos.toFixed(2)}</div>
-  <div class="bold">Saldo: $${saldo.toFixed(2)}</div>
-  <div class="mt center">Gracias por su visita</div>
+  <div class="ticket">
+    <div class="center">
+      <img class="logo" src="/logo-zero-stress.png" alt="Piscina Zero Stress" />
+      <div class="title">PISCINA ZERO STRESS</div>
+      <div class="subtitle muted">Comprobante de consumo</div>
+    </div>
+
+    <div class="line"></div>
+
+    <div class="meta">
+      <div class="row"><div>Cliente:</div><div class="bold">${escapeHtml(acc.clientName)}</div></div>
+    </div>
+
+    <div class="line"></div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Concepto</th>
+          <th class="right col-cant">Cant</th>
+          <th class="right col-total">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${printableCharges.length ? chargesRows : `<tr><td colspan="3" class="muted">Sin cargos</td></tr>`}
+      </tbody>
+    </table>
+
+    <div class="line"></div>
+
+    <div class="totals">
+      <div class="row grand"><div class="bold">Total:</div><div class="bold">$${total.toFixed(2)}</div></div>
+    </div>
+
+    <div class="line"></div>
+
+    <div class="center footer">
+      <div class="bold">¡Gracias por su visita!</div>
+      <div class="small muted">Conserve este comprobante</div>
+    </div>
+
+    <div class="no-print small muted center" style="margin-top:10px;">
+      Si no se abre impresión automática, presione Ctrl+P
+    </div>
+  </div>
+
   <script>
-    window.print();
-    window.onafterprint = function() { window.close(); };
+    (function(){
+      const img = document.querySelector('img.logo');
+      let done = false;
+      function go(){
+        if (done) return;
+        done = true;
+        setTimeout(() => { window.print(); }, 50);
+        window.onafterprint = function(){ window.close(); };
+      }
+      if (!img) return go();
+      if (img.complete) return go();
+      img.onload = go;
+      img.onerror = go;
+      setTimeout(go, 700);
+    })();
   </script>
 </body>
 </html>
@@ -481,6 +488,15 @@ export function printAccountReceipt(accountId: string) {
   win.document.open();
   win.document.write(html);
   win.document.close();
+
+  function escapeHtml(v: string) {
+    return String(v ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
 }
 
 /* ------------------ PASES (mock local) ------------------ */
@@ -571,8 +587,7 @@ export async function openAccount(input: {
   if (input.keys?.items?.length) {
     const dur = input.keys.duration;
     const tag = input.keys.items.map((k) => `${k.number}${k.gender}`).join(", ");
-    const price =
-      dur === "1H" ? PRICES.KEY_1H : dur === "8H" ? PRICES.KEY_8H : PRICES.KEY_2M;
+    const price = dur === "1H" ? PRICES.KEY_1H : dur === "8H" ? PRICES.KEY_8H : PRICES.KEY_2M;
     addChargeIf(charges, "Key", `Llaves ${tag} (${dur})`, 1, price);
   }
 
@@ -582,13 +597,7 @@ export async function openAccount(input: {
 }
 
 /* ---------- helpers ---------- */
-function addChargeIf(
-  list: Charge[],
-  kind: Charge["kind"],
-  label: string,
-  qty: number,
-  price: number
-) {
+function addChargeIf(list: Charge[], kind: Charge["kind"], label: string, qty: number, price: number) {
   if (!qty) return;
   list.push({
     id: uid("ch"),
@@ -603,9 +612,7 @@ function addChargeIf(
 }
 
 function nextAccountId(existing: PosAccount[]) {
-  const nums = existing
-    .map((a) => parseInt(a.id, 10))
-    .filter((n) => !Number.isNaN(n));
+  const nums = existing.map((a) => parseInt(a.id, 10)).filter((n) => !Number.isNaN(n));
   const next = nums.length ? Math.max(...nums) + 1 : 1;
   return next.toString().padStart(3, "0");
 }

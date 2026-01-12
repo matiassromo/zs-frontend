@@ -19,6 +19,8 @@ import {
 
 // ✅ modal unificado create/edit
 import AccountFormModal from "@/components/pos/AccountFormModal";
+import { toDateKey, getCashboxByDate, addPosPaymentMove } from "@/lib/apiv2/cashbox";
+
 
 // ✅ llaves backend real
 import { listKeys, updateKey } from "@/lib/apiv2/keys";
@@ -27,6 +29,7 @@ import type { Key } from "@/types/key";
 // ✅ bar
 import { listBarProducts } from "@/lib/apiv2/barProducts";
 import type { BarProduct } from "@/types/barProduct";
+
 
 type PayMethod = "Efectivo" | "Transferencia";
 type KeyGender = "H" | "M";
@@ -43,18 +46,13 @@ function formatKeyLabel(g: KeyGender, n: number) {
   return `${n}${g}`;
 }
 
-function computeKeyGenderAndNumber(
-  orderedIndex: number
-): { gender: KeyGender; number: number } {
+function computeKeyGenderAndNumber(orderedIndex: number): { gender: KeyGender; number: number } {
   const gender: KeyGender = orderedIndex < 16 ? "H" : "M";
   const number = gender === "H" ? orderedIndex + 1 : orderedIndex - 16 + 1;
   return { gender, number };
 }
 
-async function findKeyEntityByGenderNumber(
-  g: KeyGender,
-  n: number
-): Promise<Key | null> {
+async function findKeyEntityByGenderNumber(g: KeyGender, n: number): Promise<Key | null> {
   const raw: Key[] = await listKeys();
   const ordered = [...raw].sort((a, b) => a.id.localeCompare(b.id));
 
@@ -63,6 +61,17 @@ async function findKeyEntityByGenderNumber(
     if (gender === g && number === n) return ordered[idx];
   }
   return null;
+}
+
+/* ----------------- POS LOCK (mismo criterio que Caja Diaria) ----------------- */
+const lockKey = (dateKey: string) => `zs:cashbox:locked:${dateKey}`;
+function isLocked(dateKey: string) {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(lockKey(dateKey)) === "1";
+}
+function emitCashboxChanged(dateKey: string) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("zs:cashbox-changed", { detail: { dateKey } }));
 }
 
 export default function AccountDetail({
@@ -88,6 +97,10 @@ export default function AccountDetail({
   const [closing, setClosing] = useState(false);
   const [printing, setPrinting] = useState(false);
 
+  // ✅ estado POS habilitado por caja diaria (según fecha de la cuenta)
+  const [posEnabled, setPosEnabled] = useState(true);
+  const [posReason, setPosReason] = useState<string | null>(null);
+
   async function loadAll() {
     setLoading(true);
     const [s, ch, pm] = await Promise.all([
@@ -101,10 +114,46 @@ export default function AccountDetail({
     setLoading(false);
   }
 
+  function refreshPosGateFromSummary(s: AccountSummary | null) {
+    if (!s) return;
+    const dk = toDateKey(new Date(s.openedAt));
+    const cb = getCashboxByDate(dk);
+    const locked = isLocked(dk);
+
+    // ✅ Regla: POS SOLO opera si hay caja ABIERTA y NO locked
+    const ok = !!cb && cb.status === "Abierta" && !locked;
+    setPosEnabled(ok);
+
+    if (ok) {
+      setPosReason(null);
+    } else {
+      if (locked) setPosReason(`Caja del día ${dk} cerrada. POS bloqueado.`);
+      else if (!cb) setPosReason(`No hay caja abierta para el día ${dk}. Abre caja para operar POS.`);
+      else setPosReason(`Caja del día ${dk} está ${cb.status}. Abre caja para operar POS.`);
+    }
+  }
+
   useEffect(() => {
     loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId]);
+
+  useEffect(() => {
+    refreshPosGateFromSummary(summary);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summary?.openedAt, summary?.status]);
+
+  // ✅ escuchar cambios desde Caja Diaria (abrir/cerrar) o pagos (POS)
+  useEffect(() => {
+    function onCashboxChanged(e: any) {
+      // refresca gate y pagos/cargos por si hubo pagos desde POS
+      refreshPosGateFromSummary(summary);
+      loadAll();
+    }
+    window.addEventListener("zs:cashbox-changed", onCashboxChanged as any);
+    return () => window.removeEventListener("zs:cashbox-changed", onCashboxChanged as any);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summary, accountId]);
 
   const saldoColor = useMemo(() => {
     if (!summary) return "";
@@ -126,8 +175,12 @@ export default function AccountDetail({
   }
 
   async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
+    if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
     const c = charges.find((x) => x.id === form.chargeId);
     if (!c) return;
+
+    // ✅ llaves no se pagan (no tiene sentido registrar pago)
+    if (c.kind === "Key") return;
 
     await addPayment(accountId, {
       method: form.method,
@@ -137,12 +190,30 @@ export default function AccountDetail({
 
     await markChargePaid(accountId, form.chargeId);
 
+        // ✅ registrar ingreso en Caja Diaria (local) para el día de la cuenta
+    const dk = toDateKey(new Date(summary?.openedAt ?? new Date()));
+    addPosPaymentMove({
+      dateKey: dk,
+      amount: c.total,
+      method: form.method,
+      concept: `Cuenta #${accountId} · ${summary?.clientName ?? ""} · ${c.concept}`,
+      createdBy: "pos",
+      ref: { kind: "Charge", id: c.id },
+    });
+
+
     await loadAll();
     setPayChargeId(null);
+
+    // ✅ notifica a Caja Diaria para que refresque y vea pagos del día
+       emitCashboxChanged(dk);
+
+
     onChanged?.();
   }
 
   async function handleCloseAccount() {
+    if (!posEnabled) return;
     if (closing) return;
     setClosing(true);
     try {
@@ -164,14 +235,10 @@ export default function AccountDetail({
     }
   }
 
-  async function handleAddExtraCharge(input: {
-    concept: string;
-    qty: number;
-    amount: number;
-  }) {
+  async function handleAddExtraCharge(input: { concept: string; qty: number; amount: number }) {
+    if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
     if (!summary) return;
-    if (summary.status !== "Abierta")
-      throw new Error("Solo puedes modificar cuentas abiertas.");
+    if (summary.status !== "Abierta") throw new Error("Solo puedes modificar cuentas abiertas.");
 
     const concept = input.concept.trim();
     if (!concept) throw new Error("Concepto requerido.");
@@ -189,14 +256,10 @@ export default function AccountDetail({
     onChanged?.();
   }
 
-  async function handleAddKey(input: {
-    gender: KeyGender;
-    number: number;
-    clientName: string;
-  }) {
+  async function handleAddKey(input: { gender: KeyGender; number: number; clientName: string }) {
+    if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
     if (!summary) return;
-    if (summary.status !== "Abierta")
-      throw new Error("Solo puedes modificar cuentas abiertas.");
+    if (summary.status !== "Abierta") throw new Error("Solo puedes modificar cuentas abiertas.");
 
     const key = await findKeyEntityByGenderNumber(input.gender, input.number);
     if (!key) throw new Error("No se encontró esa llave.");
@@ -221,14 +284,10 @@ export default function AccountDetail({
     onChanged?.();
   }
 
-  async function handleRemoveKey(input: {
-    gender: KeyGender;
-    number: number;
-    clientName: string;
-  }) {
+  async function handleRemoveKey(input: { gender: KeyGender; number: number; clientName: string }) {
+    if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
     if (!summary) return;
-    if (summary.status !== "Abierta")
-      throw new Error("Solo puedes modificar cuentas abiertas.");
+    if (summary.status !== "Abierta") throw new Error("Solo puedes modificar cuentas abiertas.");
 
     const key = await findKeyEntityByGenderNumber(input.gender, input.number);
     if (!key) throw new Error("No se encontró esa llave.");
@@ -254,14 +313,10 @@ export default function AccountDetail({
   if (loading) return <div className="mt-4 text-sm text-neutral-500">Cargando detalle…</div>;
   if (!summary) return null;
 
-  const selectedCharge = payChargeId
-    ? charges.find((c) => c.id === payChargeId) ?? null
-    : null;
-
+  const selectedCharge = payChargeId ? charges.find((c) => c.id === payChargeId) ?? null : null;
   const sAny: any = summary;
 
   return (
-    // ✅ CLAVE: min-w-0 + overflow-hidden para cortar desbordes
     <div className="min-w-0 overflow-hidden">
       <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden">
         {/* Header del panel */}
@@ -269,9 +324,14 @@ export default function AccountDetail({
           <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
             Detalle de cuenta
           </div>
-          <div className="text-sm font-semibold text-neutral-900">
-            Cuenta #{summary.id}
-          </div>
+          <div className="text-sm font-semibold text-neutral-900">Cuenta #{summary.id}</div>
+
+          {/* ✅ Banner POS gate */}
+          {!posEnabled && (
+            <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+              {posReason ?? "POS cerrado para este día."}
+            </div>
+          )}
         </div>
 
         <div className="p-4 grid gap-4 min-w-0">
@@ -281,9 +341,7 @@ export default function AccountDetail({
               <div className="min-w-0">
                 <div className="text-sm text-neutral-600">
                   Cuenta #{summary.id} ·{" "}
-                  <span className="font-medium text-neutral-900">
-                    {summary.clientName}
-                  </span>
+                  <span className="font-medium text-neutral-900">{summary.clientName}</span>
                 </div>
                 <div className="mt-1 text-sm">
                   <span className="font-medium">Estado:</span> {summary.status}
@@ -304,19 +362,22 @@ export default function AccountDetail({
                 <div className="flex flex-wrap gap-2 justify-start md:justify-end">
                   <button
                     onClick={() => setEditFormOpen(true)}
-                    className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50"
+                    disabled={!posEnabled}
+                    className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50 disabled:opacity-50"
                   >
                     Editar cuenta
                   </button>
                   <button
                     onClick={() => setKeysOpen(true)}
-                    className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50"
+                    disabled={!posEnabled}
+                    className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50 disabled:opacity-50"
                   >
                     Llaves
                   </button>
                   <button
                     onClick={() => setAddChargeOpen(true)}
-                    className="inline-flex items-center justify-center rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700"
+                    disabled={!posEnabled}
+                    className="inline-flex items-center justify-center rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
                   >
                     Agregar cargo
                   </button>
@@ -352,10 +413,11 @@ export default function AccountDetail({
             {summary.status === "Abierta" && (
               <button
                 onClick={handleCloseAccount}
-                disabled={closing}
+                disabled={closing || !posEnabled}
                 className={
                   "inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-medium text-white " +
-                  (closing ? "bg-rose-400 cursor-not-allowed" : "bg-rose-600 hover:bg-rose-700")
+                  (closing ? "bg-rose-400 cursor-not-allowed" : "bg-rose-600 hover:bg-rose-700") +
+                  " disabled:opacity-50"
                 }
               >
                 {closing ? "Cerrando…" : "Cerrar cuenta"}
@@ -376,11 +438,7 @@ export default function AccountDetail({
 
           {/* Cargos */}
           <div className="rounded-xl border border-neutral-200 bg-white overflow-hidden min-w-0">
-            <div className="px-4 py-3 border-b border-neutral-200 font-semibold">
-              Cargos
-            </div>
-
-            {/* ✅ CLAVE: overflow-x-auto pero SIN min-w gigante obligatorio */}
+            <div className="px-4 py-3 border-b border-neutral-200 font-semibold">Cargos</div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm min-w-[680px]">
                 <thead className="bg-neutral-50">
@@ -395,10 +453,11 @@ export default function AccountDetail({
                     <th className="py-3 px-3 text-right">Acción</th>
                   </tr>
                 </thead>
+
                 <tbody>
                   {charges.map((c) => {
-                    const paidMethod =
-                      c.status === "Pagado" ? findChargePaidMethod(c.id) : null;
+                    const paidMethod = c.status === "Pagado" ? findChargePaidMethod(c.id) : null;
+                    const isKey = c.kind === "Key";
 
                     return (
                       <tr key={c.id} className="border-t border-neutral-200">
@@ -407,15 +466,18 @@ export default function AccountDetail({
                         </td>
                         <td className="py-3 px-3">{c.kind}</td>
                         <td className="py-3 px-3">
-                          {c.kind === "Key"
-                            ? c.concept.replace(/\s*\(\s*1H\s*\)\s*$/i, "")
-                            : c.concept}
+                          {c.kind === "Key" ? c.concept.replace(/\s*\(\s*1H\s*\)\s*$/i, "") : c.concept}
                         </td>
                         <td className="py-3 px-3">{c.qty}</td>
-                        <td className="py-3 px-3">${c.amount.toFixed(2)}</td>
-                        <td className="py-3 px-3 font-semibold">
-                          ${c.total.toFixed(2)}
+
+                        {/* ✅ llaves sin precio */}
+                        <td className="py-3 px-3">
+                          {isKey ? <span className="text-neutral-400">—</span> : `$${c.amount.toFixed(2)}`}
                         </td>
+                        <td className="py-3 px-3 font-semibold">
+                          {isKey ? <span className="text-neutral-400">—</span> : `$${c.total.toFixed(2)}`}
+                        </td>
+
                         <td className="py-3 px-3">
                           {c.status === "Pagado" ? (
                             <span className="inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800">
@@ -427,11 +489,14 @@ export default function AccountDetail({
                             </span>
                           )}
                         </td>
+
                         <td className="py-3 px-3 text-right">
-                          {summary.status === "Abierta" && c.status === "Pendiente" ? (
+                          {/* ✅ NO registrar pago para llaves */}
+                          {summary.status === "Abierta" && c.status === "Pendiente" && !isKey ? (
                             <button
                               onClick={() => setPayChargeId(c.id)}
-                              className="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700"
+                              disabled={!posEnabled}
+                              className="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
                             >
                               Registrar pago
                             </button>
@@ -457,9 +522,7 @@ export default function AccountDetail({
 
           {/* Pagos */}
           <div className="rounded-xl border border-neutral-200 bg-white overflow-hidden min-w-0">
-            <div className="px-4 py-3 border-b border-neutral-200 font-semibold">
-              Pagos
-            </div>
+            <div className="px-4 py-3 border-b border-neutral-200 font-semibold">Pagos</div>
 
             <div className="overflow-x-auto">
               <table className="w-full text-sm min-w-[520px]">
@@ -477,9 +540,7 @@ export default function AccountDetail({
                         {new Date(p.createdAt).toLocaleString("es-EC")}
                       </td>
                       <td className="py-3 px-3">{(p as any).method}</td>
-                      <td className="py-3 px-3 font-semibold">
-                        ${p.amount.toFixed(2)}
-                      </td>
+                      <td className="py-3 px-3 font-semibold">${p.amount.toFixed(2)}</td>
                     </tr>
                   ))}
 
@@ -497,14 +558,12 @@ export default function AccountDetail({
         </div>
       </div>
 
-      {/* Modal pago */}
-      {selectedCharge && (
+      {/* Modal pago (no llaves) */}
+      {selectedCharge && selectedCharge.kind !== "Key" && (
         <PayChargeModal
           charge={selectedCharge}
           onCancel={() => setPayChargeId(null)}
-          onConfirm={(method) =>
-            handlePayCharge({ chargeId: selectedCharge.id, method })
-          }
+          onConfirm={(method) => handlePayCharge({ chargeId: selectedCharge.id, method })}
         />
       )}
 
@@ -519,13 +578,12 @@ export default function AccountDetail({
             gender: sAny.gender ?? "M",
             requiresParking: sAny.requiresParking ?? false,
             people: sAny.people ?? { adult: 0, child: 0, te: 0, dis: 0, ac: 0 },
-            keys: (sAny.keys ?? []).map((k: any) => ({
-              gender: k.gender,
-              number: k.number,
-            })),
+            keys: (sAny.keys ?? []).map((k: any) => ({ gender: k.gender, number: k.number })),
           }}
           onCancel={() => setEditFormOpen(false)}
           onSubmit={async (payload) => {
+            if (!posEnabled) return;
+
             await updateAccount(accountId, {
               clientId: payload.clientId,
               clientName: payload.clientName,
@@ -686,10 +744,7 @@ function AddChargeModal({
     return products.filter((p) => norm(p.name).includes(nq));
   }, [products, q]);
 
-  const selected = useMemo(
-    () => products.find((p) => p.id === selectedId) ?? null,
-    [products, selectedId]
-  );
+  const selected = useMemo(() => products.find((p) => p.id === selectedId) ?? null, [products, selectedId]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -753,9 +808,7 @@ function AddChargeModal({
                         min={1}
                         className="border border-neutral-200 rounded-xl px-3 py-2 w-full mt-1"
                         value={qty}
-                        onChange={(e) =>
-                          setQty(Math.max(1, parseInt(e.target.value || "1", 10)))
-                        }
+                        onChange={(e) => setQty(Math.max(1, parseInt(e.target.value || "1", 10)))}
                       />
                     </div>
                   </div>
@@ -772,20 +825,14 @@ function AddChargeModal({
                         type="button"
                       >
                         <div className="text-sm font-semibold">{p.name}</div>
-                        <div className="text-xs text-neutral-500">
-                          ${p.unitPrice.toFixed(2)}
-                        </div>
+                        <div className="text-xs text-neutral-500">${p.unitPrice.toFixed(2)}</div>
                       </button>
                     ))}
                   </div>
 
                   <div className="text-sm text-neutral-700">
-                    Seleccionado:{" "}
-                    <span className="font-semibold">{selected?.name ?? "—"}</span>{" "}
-                    · Unit:{" "}
-                    <span className="font-semibold">
-                      ${(selected?.unitPrice ?? 0).toFixed(2)}
-                    </span>
+                    Seleccionado: <span className="font-semibold">{selected?.name ?? "—"}</span> · Unit:{" "}
+                    <span className="font-semibold">${(selected?.unitPrice ?? 0).toFixed(2)}</span>
                   </div>
                 </>
               )}
@@ -819,9 +866,7 @@ function AddChargeModal({
                   min={1}
                   className="border border-neutral-200 rounded-xl px-3 py-2 w-full mt-1"
                   value={qty}
-                  onChange={(e) =>
-                    setQty(Math.max(1, parseInt(e.target.value || "1", 10)))
-                  }
+                  onChange={(e) => setQty(Math.max(1, parseInt(e.target.value || "1", 10)))}
                 />
               </div>
             </div>
@@ -836,11 +881,7 @@ function AddChargeModal({
             onClick={() => {
               if (tab === "bar") {
                 if (!selected) return;
-                onAdd({
-                  concept: `Bar: ${selected.name}`,
-                  qty,
-                  amount: selected.unitPrice,
-                });
+                onAdd({ concept: `Bar: ${selected.name}`, qty, amount: selected.unitPrice });
                 return;
               }
               onAdd({ concept, qty, amount });
@@ -867,11 +908,7 @@ function KeysModal({
   currentClientName: string;
   onCancel: () => void;
   onAddKey: (payload: { gender: KeyGender; number: number; clientName: string }) => Promise<void>;
-  onRemoveKey: (payload: {
-    gender: KeyGender;
-    number: number;
-    clientName: string;
-  }) => Promise<void>;
+  onRemoveKey: (payload: { gender: KeyGender; number: number; clientName: string }) => Promise<void>;
 }) {
   const [gender, setGender] = useState<KeyGender>("H");
   const [free, setFree] = useState<number[]>([]);
@@ -950,9 +987,7 @@ function KeysModal({
               <div className="rounded-xl border border-neutral-200 p-3">
                 <div className="font-semibold text-sm mb-2">Disponibles</div>
                 <div className="flex flex-wrap gap-2">
-                  {free.length === 0 && (
-                    <span className="text-xs text-neutral-500">No hay llaves libres</span>
-                  )}
+                  {free.length === 0 && <span className="text-xs text-neutral-500">No hay llaves libres</span>}
                   {free.map((n) => (
                     <button
                       key={`free-${gender}-${n}`}
@@ -972,9 +1007,7 @@ function KeysModal({
               <div className="rounded-xl border border-neutral-200 p-3">
                 <div className="font-semibold text-sm mb-2">Ocupadas</div>
                 <div className="flex flex-wrap gap-2">
-                  {busy.length === 0 && (
-                    <span className="text-xs text-neutral-500">No hay llaves ocupadas</span>
-                  )}
+                  {busy.length === 0 && <span className="text-xs text-neutral-500">No hay llaves ocupadas</span>}
                   {busy.map((n) => (
                     <button
                       key={`busy-${gender}-${n}`}
@@ -990,7 +1023,7 @@ function KeysModal({
                   ))}
                 </div>
                 <div className="mt-2 text-xs text-neutral-500">
-                  Este modal libera/asigna llaves en inventario y registra el evento como cargo (monto 0).
+                  Este modal libera/asigna llaves en inventario y registra el evento como cargo (sin valor).
                 </div>
               </div>
             </div>
