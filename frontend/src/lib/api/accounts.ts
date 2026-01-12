@@ -36,6 +36,7 @@ export type Payment = {
 
 export type AccountSummary = {
   id: string;
+  clientId: string;             // ✅
   clientName: string;
   status: "Abierta" | "Cerrada";
   openedAt: string;
@@ -43,7 +44,14 @@ export type AccountSummary = {
   totalCargos: number;
   totalPagos: number;
   saldo: number;
+
+  // opcionales útiles para editar
+  gender?: "M" | "F";
+  entryType?: PosEntryType;
+  requiresParking?: boolean;
+  keys?: { items: SelectedKey[]; duration: "1H" | "8H" | "2M" };
 };
+
 
 export type UpdateAccountInput = Partial<{
   clientId: string;
@@ -153,6 +161,7 @@ export async function getAccount(id: string): Promise<AccountSummary> {
   const totalPagos = payments.reduce((ac, p) => ac + p.amount, 0);
   return {
     id,
+    clientId: acc.clientId,              
     clientName: acc.clientName,
     status: acc.status,
     openedAt: acc.openedAt,
@@ -160,7 +169,13 @@ export async function getAccount(id: string): Promise<AccountSummary> {
     totalCargos,
     totalPagos,
     saldo: totalCargos - totalPagos,
+
+    gender: acc.gender,                  // opcional
+    entryType: acc.entryType,            // opcional
+    requiresParking: acc.requiresParking ?? false, // opcional
+    keys: acc.keys,                      // opcional
   };
+
 }
 
 export async function listCharges(id: string) {

@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 // ✅ clientes
-import { listClients, createClient } from "@/lib/api/clients";
+import { listClients } from "@/lib/api/clients";
 import type { Client } from "@/types/client";
 
 // 🔽 llaves backend real
@@ -166,42 +166,38 @@ export type AccountFormSubmit = {
   clientId: string;
   clientName: string;
 
-  // lo que quedó en el UI
   countsNext: Counts;
-
-  // para edición:
   countsBase: Counts;
-  countsAdd: Counts; // lo nuevo para cobrar
-  countsRefund: Counts; // lo a devolver (se registra como ajuste negativo)
+  countsAdd: Counts;
+  countsRefund: Counts;
 
-  // tarjeta
   usePassCard: boolean;
   passPeopleBase: number;
   passPeopleNext: number;
-  passPeopleAdd: number; // solo aumenta (no se permite bajar usos desde aquí)
+  passPeopleAdd: number;
 
-  // llaves
   keyGender: KeyGender;
   selectedKeys: Array<{ keyId: string; gender: KeyGender; number: number; duration: Duration }>;
   duration: Duration;
 
-  // parking
+  // ✅ agrega esto:
+  keys: { items: Array<{ gender: KeyGender; number: number }>; duration: Duration };
+
   requiresParking: boolean;
 
-  // estado tarjeta para que el padre decida acciones
   cardState: AccessCardState;
 
   passOps: {
     shouldConsumePasses: boolean;
-    shouldChargePassSale: boolean; // si creó tarjeta ahora o si no existía y se creó
+    shouldChargePassSale: boolean;
     remainingToValidate: number;
     willCreateIfMissing: boolean;
   };
 
   totals: {
     entriesSubtotalNext: number;
-    entriesDeltaNet: number; // +cobros -devoluciones (en $)
-    passSale: number; // $55 si aplica en esta edición
+    entriesDeltaNet: number;
+    passSale: number;
     totalPeopleNext: number;
   };
 };
@@ -226,6 +222,9 @@ export default function AccountFormModal({
   // ============== BASE (para EDIT: calcular deltas) ==============
   const baseCountsRef = useRef<Counts>({ A: 0, N: 0, TE: 0, D: 0, AC: 0 });
   const basePassRef = useRef<number>(0);
+
+  const baseClientIdRef = useRef<string>("");
+  const baseClientNameRef = useRef<string>("");
 
   // ============== ENTRADAS (valores actuales en UI) ==============
   const [counts, setCounts] = useState<Counts>(() => ({
@@ -272,9 +271,13 @@ export default function AccountFormModal({
   useEffect(() => {
     if (!initial) return;
 
+    baseClientIdRef.current = String(initial.clientId ?? "");
+    baseClientNameRef.current = String(initial.clientName ?? "").trim();
+
     // Cliente
     setClient(null);
-    setQuery((initial.clientName ?? "").trim());
+    setQuery(baseClientNameRef.current);
+
 
     const baseCounts: Counts = {
       A: clampInt(initial.counts?.A ?? 0),
@@ -325,6 +328,11 @@ export default function AccountFormModal({
 
   // =================== BUSQUEDA CLIENTE ===================
   useEffect(() => {
+    if (mode === "edit") {
+      setResults([]);
+      return;
+    }
+
     const t = setTimeout(async () => {
       const q = query.trim();
       if (!q) {
@@ -345,7 +353,8 @@ export default function AccountFormModal({
     }, 150);
 
     return () => clearTimeout(t);
-  }, [query, allClients]);
+  }, [query, allClients, mode]);
+
 
   // =================== LLAVES DISPONIBLES ===================
   const selectedHash = useMemo(() => {
@@ -397,6 +406,8 @@ export default function AccountFormModal({
     entriesRefundMoney,
   ]);
 
+  
+
   // Tarjeta (edit): solo permitir aumentar usos; si bajan, se clampa.
   const passPeopleBase = basePassRef.current;
   useEffect(() => {
@@ -436,12 +447,29 @@ export default function AccountFormModal({
   }
 
   async function ensureClient(existing: Client | null, fallbackName: string) {
+    // ✅ EDIT: nunca crear clientes
+    if (mode === "edit") {
+      const id = baseClientIdRef.current;
+      const name = (existing?.name ?? fallbackName ?? "").trim();
+
+      if (!id) throw new Error("Esta cuenta no tiene clientId (initial.clientId).");
+      if (!name) throw new Error("Nombre de cliente inválido.");
+
+      return { id, name } as any;
+    }
+
+    // ✅ CREATE: solo usar selección o nombre escrito; si no existe, lo manejará CreateAccountModal
     if (existing) return existing;
+
     const name = fallbackName.trim();
     if (!name) throw new Error("Ingresa un nombre de cliente.");
-    const created = await createClient({ name } as any);
-    return created as any;
+
+    // Si quieres permitir crear desde aquí en CREATE, re-agregas createClient.
+    // Por ahora: no crear silenciosamente.
+    throw new Error("Selecciona un cliente existente o crea desde el modal de creación.");
   }
+
+
 
   function holderNameFromUI(): string {
     return (client?.name ?? query).trim();
@@ -470,7 +498,10 @@ export default function AccountFormModal({
         error: (e as Error).message ?? "Error buscando tarjeta.",
       }));
     }
+    
   }
+
+  
 
   async function createCardNow(holderName: string) {
     setCardState((s) => ({ ...s, loading: true, error: null }));
@@ -524,6 +555,15 @@ export default function AccountFormModal({
 
       const holder = await ensureClient(client, query);
       const holderName = holder.name;
+
+      const keysPayload = {
+        items: selectedKeys
+          .slice()
+          .sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number)
+          .map((k) => ({ gender: k.gender, number: k.number })),
+        duration,
+      };
+
 
       // --- tarjeta: validar y decidir operaciones SOLO por el incremento (edit) ---
       let shouldChargePassSale = false;
@@ -603,6 +643,9 @@ export default function AccountFormModal({
           .sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number),
         duration,
 
+        // 🔴 AQUÍ VA ESTO
+        keys: keysPayload,
+
         requiresParking,
 
         cardState,
@@ -656,33 +699,34 @@ export default function AccountFormModal({
           {/* CLIENTE */}
           <div className="grid gap-2">
             <label className="text-sm font-medium text-neutral-900">Cliente</label>
-            <input
-              className="border border-neutral-200 rounded-xl px-3 py-2"
-              placeholder="Buscar o ingresar nombre…"
-              value={client ? client.name : query}
-              onChange={(e) => {
-                setClient(null);
-                setQuery(e.target.value);
-              }}
-            />
+          <input
+            className="border border-neutral-200 rounded-xl px-3 py-2"
+            placeholder="Buscar o ingresar nombre…"
+            value={query}
+            onChange={(e) => {
+              // en edit solo texto libre, en create también
+              setClient(null);
+              setQuery(e.target.value);
+            }}
+          />
+           {mode !== "edit" && !client && results.length > 0 && (
+            <div className="border border-neutral-200 rounded-xl max-h-48 overflow-auto">
+              {results.map((r) => (
+                <button
+                  key={r.id}
+                  className="w-full text-left px-3 py-2 hover:bg-neutral-50 border-b border-neutral-100 last:border-b-0"
+                  onClick={() => {
+                    setClient(r);
+                    setQuery("");
+                  }}
+                  type="button"
+                >
+                  {r.name}
+                </button>
+              ))}
+            </div>
+          )}
 
-            {!client && results.length > 0 && (
-              <div className="border border-neutral-200 rounded-xl max-h-48 overflow-auto">
-                {results.map((r) => (
-                  <button
-                    key={r.id}
-                    className="w-full text-left px-3 py-2 hover:bg-neutral-50 border-b border-neutral-100 last:border-b-0"
-                    onClick={() => {
-                      setClient(r);
-                      setQuery("");
-                    }}
-                    type="button"
-                  >
-                    {r.name}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
 
           {/* ENTRADAS NORMAL */}

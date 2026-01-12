@@ -54,7 +54,11 @@ export default function LlavesPage() {
         const indexInZone = zone === "Hombres" ? index + 1 : index - 16 + 1;
         const code = `${indexInZone}${zone === "Hombres" ? "H" : "M"}`;
 
-        const client = (k as any).lastAssignedClient?.name ?? null;
+        const client =
+          (k as any).lastAssignedTo ??
+          (k as any).lastAssignedClient?.name ??
+          null;
+
 
         const rawNote: string | null = (k as any).notes ?? null;
         const cleanNote = rawNote

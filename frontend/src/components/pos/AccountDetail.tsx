@@ -12,23 +12,40 @@ import {
   printAccountReceipt,
   addCharge,
   updateAccount,
+  deleteCharge,
   type AccountSummary,
   type Charge,
   type Payment,
 } from "@/lib/api/accounts";
 
-import { listKeys } from "@/lib/apiv2/keys";
+import { listKeys, updateKey } from "@/lib/apiv2/keys";
 import Swal from "sweetalert2";
+
+import { consumeAccessCardByHolder } from "@/lib/apiv2/accessCards";
 
 // ✅ modal unificado create/edit
 import AccountFormModal from "@/components/pos/AccountFormModal";
 import { toDateKey, getCashboxByDate, addPosPaymentMove } from "@/lib/apiv2/cashbox";
 
+
 // ✅ bar
 import { listBarProducts } from "@/lib/apiv2/barProducts";
 import type { BarProduct } from "@/types/barProduct";
 
+const PRICES_LOCAL = { A: 7, N: 4, TE: 5, D: 5, AC: 1, PASS: 55 };
+
 type PayMethod = "Efectivo" | "Transferencia";
+
+function getKeyIdByGenderNumber(orderedKeys: any[], gender: "H" | "M", num: number) {
+  const idx = gender === "H" ? num - 1 : 16 + (num - 1);
+  const k = orderedKeys[idx];
+  return k?.id ?? null;
+}
+
+function keySig(g: any, n: any) {
+  return `${String(g)}-${String(n)}`;
+}
+
 
 function norm(s: string) {
   return (s ?? "")
@@ -47,6 +64,23 @@ function isLocked(dateKey: string) {
 function emitCashboxChanged(dateKey: string) {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent("zs:cashbox-changed", { detail: { dateKey } }));
+}
+
+/* ----------------- Normalización llaves para modal edit ----------------- */
+function normalizeKeysForForm(summaryAny: any): { gender: any; number: any }[] {
+  const raw = summaryAny?.keys;
+
+  // Formato nuevo: { items: [...], duration: ... }
+  if (raw && Array.isArray(raw.items)) {
+    return raw.items.map((k: any) => ({ gender: k.gender, number: k.number }));
+  }
+
+  // Formato viejo: [...]
+  if (Array.isArray(raw)) {
+    return raw.map((k: any) => ({ gender: k.gender, number: k.number }));
+  }
+
+  return [];
 }
 
 export default function AccountDetail({
@@ -210,7 +244,6 @@ export default function AccountDetail({
   async function handleCloseAccount() {
     if (!posEnabled) return;
     if (closing) return;
-    
 
     // ✅ Validación: no cerrar si existen llaves aún ocupadas por esta cuenta
     const allKeys = await listKeys();
@@ -229,7 +262,6 @@ export default function AccountDetail({
       });
       return;
     }
-
 
     const pending = charges.some((c) => c.kind !== "Key" && c.total > 0 && c.status !== "Pagado");
     if (pending) {
@@ -278,11 +310,24 @@ export default function AccountDetail({
     onChanged?.();
   }
 
+  const displayCharges = useMemo(() => {
+  const nonKey = charges.filter((c) => c.kind !== "Key");
+  const keyCharges = charges
+    .filter((c) => c.kind === "Key")
+    .slice()
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+
+  const lastKey = keyCharges[0] ? [keyCharges[0]] : [];
+  return [...nonKey, ...lastKey].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}, [charges]);
+
   if (loading) return <div className="mt-4 text-sm text-neutral-500">Cargando detalle…</div>;
   if (!summary) return null;
 
   const selectedCharge = payChargeId ? charges.find((c) => c.id === payChargeId) ?? null : null;
-  const sAny: any = summary;
+
+  
+
 
   return (
     <div className="min-w-0 overflow-hidden">
@@ -405,7 +450,7 @@ export default function AccountDetail({
                 </thead>
 
                 <tbody>
-                  {charges.map((c) => {
+                  {displayCharges.map((c) => {
                     const paidMethod = c.status === "Pagado" ? findChargePaidMethod(c.id) : null;
                     const isKey = c.kind === "Key";
 
@@ -528,28 +573,96 @@ export default function AccountDetail({
         <AccountFormModal
           mode="edit"
           initial={{
-            clientId: sAny.clientId ?? null,
+            clientId: summary.clientId,
             clientName: summary.clientName ?? "",
-            requiresParking: sAny.requiresParking ?? false,
-            // ⛔ si ya no usas llaves, elimina estas 2 líneas también en AccountFormModal
-            keys: (sAny.keys ?? []).map((k: any) => ({ gender: k.gender, number: k.number })),
+            requiresParking: (summary as any).requiresParking ?? false,
+            // ✅ FIX: keys puede venir como {items,...} o como []
+            keys: normalizeKeysForForm(summary as any),
           }}
           onCancel={() => setEditFormOpen(false)}
           onSubmit={async (payload) => {
             if (!posEnabled) return;
 
+            // 1) Actualiza datos base de cuenta (incluye llaves)
             await updateAccount(accountId, {
               clientId: payload.clientId,
               clientName: payload.clientName,
               requiresParking: payload.requiresParking,
-              // ⛔ si ya no usas llaves, elimina esta línea también
-              keys: (payload as any).keys,
+              keys: payload.keys, // ✅ ahora sí
             } as any);
+
+            // 2) ✅ Aplicar cambios de llaves al backend de llaves (para que /llaves lo vea)
+            // 1.5) ✅ Sync del cargo Key (para que “Cargos” se actualice)
+            try {
+              const currentCharges = await listCharges(accountId);
+
+              // borra todos los cargos Key previos (deja solo el último si prefieres, aquí los borramos todos)
+              for (const c of currentCharges) {
+                if (c.kind === "Key") {
+                  await deleteCharge(accountId, c.id);
+                }
+              }
+
+              // crea el Key nuevo si hay llaves
+              const items = payload.keys?.items ?? [];
+              if (items.length) {
+                const tag = items
+                  .slice()
+                  .sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number)
+                  .map((k) => `${k.number}${k.gender}`)
+                  .join(", ");
+
+                await addCharge(accountId, {
+                  kind: "Key",
+                  concept: `Llaves ${tag} (${payload.keys.duration})`,
+                  qty: 1,
+                  amount: 0,
+                });
+              }
+            } catch (e) {
+              console.error("No se pudo sincronizar cargo Key:", e);
+            }
+
+
+            // 3) En EDIT: registra deltas como cargos/ajustes (tu lógica)
+            const addLines: Array<{ concept: string; qty: number; amount: number }> = [];
+            const refLines: Array<{ concept: string; qty: number; amount: number }> = [];
+
+            const add = payload.countsAdd;
+            const refund = payload.countsRefund;
+
+            if (add.A) addLines.push({ concept: "Entrada adulto", qty: add.A, amount: PRICES_LOCAL.A });
+            if (add.N) addLines.push({ concept: "Entrada niño", qty: add.N, amount: PRICES_LOCAL.N });
+            if (add.TE) addLines.push({ concept: "Entrada 3ra edad", qty: add.TE, amount: PRICES_LOCAL.TE });
+            if (add.D) addLines.push({ concept: "Entrada discapacidad", qty: add.D, amount: PRICES_LOCAL.D });
+            if (add.AC) addLines.push({ concept: "Acompañante", qty: add.AC, amount: PRICES_LOCAL.AC });
+
+            if (refund.A) refLines.push({ concept: "Devolución entrada adulto", qty: refund.A, amount: -PRICES_LOCAL.A });
+            if (refund.N) refLines.push({ concept: "Devolución entrada niño", qty: refund.N, amount: -PRICES_LOCAL.N });
+            if (refund.TE) refLines.push({ concept: "Devolución entrada 3ra edad", qty: refund.TE, amount: -PRICES_LOCAL.TE });
+            if (refund.D) refLines.push({ concept: "Devolución entrada discapacidad", qty: refund.D, amount: -PRICES_LOCAL.D });
+            if (refund.AC) refLines.push({ concept: "Devolución acompañante", qty: refund.AC, amount: -PRICES_LOCAL.AC });
+
+            for (const x of addLines) {
+              await addCharge(accountId, { kind: "Normal", concept: x.concept, qty: x.qty, amount: x.amount });
+            }
+            for (const x of refLines) {
+              await addCharge(accountId, { kind: "Normal", concept: x.concept, qty: x.qty, amount: x.amount });
+            }
+
+            if (payload.passOps.shouldConsumePasses && payload.passPeopleAdd > 0) {
+              await consumeAccessCardByHolder(payload.clientName, payload.passPeopleAdd);
+            }
+
+            if (payload.passOps.shouldChargePassSale) {
+              await addCharge(accountId, { kind: "Pase", concept: "Tarjeta 10 pases", qty: 1, amount: PRICES_LOCAL.PASS });
+            }
 
             setEditFormOpen(false);
             await loadAll();
             onChanged?.();
           }}
+
         />
       )}
 
