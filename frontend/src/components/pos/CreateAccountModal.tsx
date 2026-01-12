@@ -482,27 +482,27 @@ export default function CreateAccountModal({
         createPassIfMissing: false,
       });
 
-      const addEntryCharge = async (
-        concept: string,
-        qty: number,
-        unit: number
-      ) => {
-        if (qty <= 0) return;
-        await addCharge(account.id, {
-          kind: "Normal",
-          concept,
-          qty,
-          amount: unit,
-        });
-      };
+      // const addEntryCharge = async (
+      //   concept: string,
+      //   qty: number,
+      //   unit: number
+      // ) => {
+      //   if (qty <= 0) return;
+      //   await addCharge(account.id, {
+      //     kind: "Normal",
+      //     concept,
+      //     qty,
+      //     amount: unit,
+      //   });
+      // };
 
-      await Promise.all([
-        addEntryCharge("Entrada adulto", counts.A, PRICES.A),
-        addEntryCharge("Entrada niño", counts.N, PRICES.N),
-        addEntryCharge("Entrada 3ra edad", counts.TE, PRICES.TE),
-        addEntryCharge("Entrada discapacidad", counts.D, PRICES.D),
-        addEntryCharge("Entrada acompañante", counts.AC, PRICES.AC),
-      ]);
+      // await Promise.all([
+      //   addEntryCharge("Entrada adulto", counts.A, PRICES.A),
+      //   addEntryCharge("Entrada niño", counts.N, PRICES.N),
+      //   addEntryCharge("Entrada 3ra edad", counts.TE, PRICES.TE),
+      //   addEntryCharge("Entrada discapacidad", counts.D, PRICES.D),
+      //   addEntryCharge("Entrada acompañante", counts.AC, PRICES.AC),
+      // ]);
 
       if (usePassCard && passPeople > 0 && willChargePassSale) {
         await addCharge(account.id, {

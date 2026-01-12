@@ -4,6 +4,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { useDashboard } from "@/hooks/useDashboard";
 
 type NavItem =
   | { type: "link"; href: string; label: string }
@@ -34,25 +35,27 @@ const items: NavItem[] = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const { data } = useDashboard(8000);
 
-  // En facturación debe abrirse siempre (para que se vea la subruta activa).
   const isFacturacionRoute = useMemo(
     () => pathname.startsWith("/facturacion") || pathname === "/pos",
     [pathname]
   );
 
-  // Estado manual (no se cierra al navegar a otros módulos).
   const [openFacturacion, setOpenFacturacion] = useState(false);
 
-  // Solo fuerza "abrir" cuando estás dentro de facturación.
-  // NO fuerza "cerrar" cuando sales (para que no se comprima Punto de Venta / Caja Diaria).
   useEffect(() => {
     if (isFacturacionRoute) setOpenFacturacion(true);
   }, [isFacturacionRoute]);
 
+  const cajaAbierta = data?.cajaAbierta ?? false;
+  const ingresosHoy = data?.ingresosHoy ?? 0;
+  const clientesActivos = data?.clientesActivos ?? 0;
+  const pedidosPendientes = data?.pedidosPendientes ?? 0;
+  const llavesDisponibles = data?.llavesDisponibles ?? 0;
+
   return (
     <div className="h-full p-4 flex flex-col gap-4">
-      {/* Logo + título */}
       <div className="flex items-center gap-3">
         <div className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white text-lg font-bold">
           Z
@@ -63,32 +66,57 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {/* Estado de caja */}
-      <div className="rounded-xl border border-green-200 bg-green-50 p-3">
-        <div className="text-sm font-medium text-green-800">Estado de Caja</div>
-        <div className="mt-1 text-sm text-green-700">
-          Abierta — {new Date().toLocaleDateString()}
+      {/* Estado de caja (REAL) */}
+      <div
+        className={
+          "rounded-xl border p-3 " +
+          (cajaAbierta
+            ? "border-emerald-200 bg-emerald-50"
+            : "border-rose-200 bg-rose-50")
+        }
+      >
+        <div
+          className={
+            "text-sm font-medium " +
+            (cajaAbierta ? "text-emerald-800" : "text-rose-800")
+          }
+        >
+          Estado de Caja
         </div>
-        <div className="mt-1 text-xs text-green-700">Ingresos: $7.00</div>
+        <div
+          className={
+            "mt-1 text-sm " +
+            (cajaAbierta ? "text-emerald-700" : "text-rose-700")
+          }
+        >
+          {cajaAbierta ? "Abierta" : "Cerrada"} — {new Date().toLocaleDateString("es-EC")}
+        </div>
+        <div
+          className={
+            "mt-1 text-xs " +
+            (cajaAbierta ? "text-emerald-700" : "text-rose-700")
+          }
+        >
+          Ingresos: ${ingresosHoy.toFixed(2)}
+        </div>
       </div>
 
-      {/* Métricas rápidas */}
+      {/* Métricas rápidas (REALES) */}
       <div className="grid grid-cols-3 gap-2 text-center">
         <div className="rounded-xl border border-neutral-200 bg-white p-3">
           <div className="text-xs text-neutral-500">Personas</div>
-          <div className="text-lg font-semibold">1</div>
+          <div className="text-lg font-semibold">{clientesActivos}</div>
         </div>
         <div className="rounded-xl border border-neutral-200 bg-white p-3">
           <div className="text-xs text-neutral-500">Llaves</div>
-          <div className="text-lg font-semibold">31</div>
+          <div className="text-lg font-semibold">{llavesDisponibles}</div>
         </div>
         <div className="rounded-xl border border-neutral-200 bg-white p-3">
           <div className="text-xs text-neutral-500">Pend.</div>
-          <div className="text-lg font-semibold">1</div>
+          <div className="text-lg font-semibold">{pedidosPendientes}</div>
         </div>
       </div>
 
-      {/* Navegación */}
       <nav className="mt-2 flex flex-col gap-1">
         {items.map((it) => {
           if (it.type === "link") {
@@ -109,7 +137,6 @@ export default function Sidebar() {
           }
 
           const groupActive = isFacturacionRoute;
-
           const open = openFacturacion || groupActive;
 
           return (
@@ -117,7 +144,6 @@ export default function Sidebar() {
               <button
                 type="button"
                 onClick={() => {
-                  // Si estás dentro de facturación, no permitas cerrar (evita esconder el item activo).
                   if (groupActive) return;
                   setOpenFacturacion((v) => !v);
                 }}
@@ -128,8 +154,6 @@ export default function Sidebar() {
                 }`}
               >
                 <span className="font-medium">{it.label}</span>
-
-                {/* Chevron con rotación suave */}
                 <span
                   className={`i-lucide-chevron-down transition-transform duration-300 ease-out ${
                     open ? "rotate-180" : "rotate-0"
@@ -137,7 +161,6 @@ export default function Sidebar() {
                 />
               </button>
 
-              {/* Animación elegante: grid-rows + fade/slide */}
               <div
                 className={`grid transition-[grid-template-rows] duration-300 ease-out ${
                   open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
@@ -146,9 +169,7 @@ export default function Sidebar() {
                 <div className="overflow-hidden">
                   <div
                     className={`mt-1 ml-2 flex flex-col gap-1 border-l border-neutral-200 pl-2 transition-all duration-300 ease-out ${
-                      open
-                        ? "opacity-100 translate-y-0"
-                        : "opacity-0 -translate-y-1"
+                      open ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-1"
                     }`}
                   >
                     {it.children.map((c) => {

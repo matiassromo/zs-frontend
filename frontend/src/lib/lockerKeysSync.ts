@@ -1,7 +1,24 @@
 // src/lib/lockerKeysSync.ts
+"use client";
+
 import { listKeys, updateKey } from "@/lib/apiv2/keys";
 import type { Key } from "@/types/key";
 import type { LockerZone } from "@/types/lockerKey";
+
+const SYNC_EVENT = "zs:sync";
+const SYNC_TS_KEY = "zs:sync:ts";
+
+function emitZsSync() {
+  if (typeof window === "undefined") return;
+
+  // mismo tab
+  window.dispatchEvent(new Event(SYNC_EVENT));
+
+  // otros tabs/ventanas
+  try {
+    window.localStorage.setItem(SYNC_TS_KEY, String(Date.now()));
+  } catch {}
+}
 
 function buildCodeFromIndex(index: number): { code: string; zone: LockerZone } {
   const zone: LockerZone = index < 16 ? "Hombres" : "Mujeres";
@@ -21,35 +38,48 @@ async function getKeyIdsByCodes(codes: string[]): Promise<string[]> {
     mapCodeToId[code] = k.id;
   });
 
-  return codes
-    .map((c) => mapCodeToId[c])
-    .filter((id): id is string => !!id);
+  return codes.map((c) => mapCodeToId[c]).filter((id): id is string => !!id);
 }
 
 // Marcar llaves como ocupadas desde el POS
 export async function occupyLockerKeys(codes: string[], clientName: string) {
   const ids = await getKeyIdsByCodes(codes);
+
   await Promise.all(
     ids.map((id) =>
       updateKey(id, {
         available: false,
-        lastAssignedClient: clientName,
+        lastAssignedTo: clientName, // ✅ CORRECTO
         notes: null,
       })
     )
   );
+
+
+  // 🔥 refrescar sidebar/dashboard
+  emitZsSync();
 }
 
 // Marcar llaves como libres (devolver llaves)
 export async function releaseLockerKeys(codes: string[]) {
   const ids = await getKeyIdsByCodes(codes);
+
   await Promise.all(
     ids.map((id) =>
       updateKey(id, {
         available: true,
-        lastAssignedClient: null,
+        lastAssignedTo: null, // ✅ CORRECTO
         notes: null,
       })
     )
   );
+
+
+  // 🔥 refrescar sidebar/dashboard
+  emitZsSync();
+}
+
+// Útil si en /llaves liberas con updateKey directo
+export function notifyKeysChanged() {
+  emitZsSync();
 }

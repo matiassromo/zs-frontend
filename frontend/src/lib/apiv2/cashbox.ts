@@ -1,6 +1,7 @@
 // src/lib/apiv2/cashbox.ts
 import { http } from "./http";
 import type { CashMove, CashMoveType, Cashbox, CashboxTotals, PaymentSummary } from "@/types/cashbox";
+import { emitDashboardInvalidate } from "@/lib/events/bus";
 
 const LS_PREFIX = "zs.cashbox.v1";
 const LS_BOXES_KEY = `${LS_PREFIX}.boxes`; // record por dateKey
@@ -46,7 +47,11 @@ function readJson<T>(key: string): T | null {
 function writeJson<T>(key: string, value: T) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(key, JSON.stringify(value));
+
+  // ✅ importante: storage NO dispara en el mismo tab
+  emitDashboardInvalidate();
 }
+
 
 type BoxesStore = Record<string, Cashbox>;
 type ManualMovesStore = Record<string, CashMove[]>;

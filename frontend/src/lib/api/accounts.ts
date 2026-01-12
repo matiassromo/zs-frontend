@@ -13,6 +13,10 @@ export type PosAccount = {
   keys?: { items: SelectedKey[]; duration: "1H" | "8H" | "2M" };
   entryType: PosEntryType;
   requiresParking?: boolean;
+
+  // ✅ personas persistidas (para Dashboard)
+  peopleCount?: number;
+  counts?: { A: number; N: number; TE: number; D: number; AC: number };
 };
 
 export type Charge = {
@@ -36,7 +40,7 @@ export type Payment = {
 
 export type AccountSummary = {
   id: string;
-  clientId: string;             // ✅
+  clientId: string;
   clientName: string;
   status: "Abierta" | "Cerrada";
   openedAt: string;
@@ -50,8 +54,11 @@ export type AccountSummary = {
   entryType?: PosEntryType;
   requiresParking?: boolean;
   keys?: { items: SelectedKey[]; duration: "1H" | "8H" | "2M" };
-};
 
+  // opcional: si luego lo quieres mostrar en detalle
+  peopleCount?: number;
+  counts?: { A: number; N: number; TE: number; D: number; AC: number };
+};
 
 export type UpdateAccountInput = Partial<{
   clientId: string;
@@ -100,6 +107,7 @@ export const PRICES = {
   KEY_2M: 0.0,
 };
 
+/* ------------------ util ------------------ */
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -116,6 +124,69 @@ function normName(s: string) {
   return s.trim().toLowerCase();
 }
 
+function safeNum(v: any) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+
+function emptyCounts() {
+  return { A: 0, N: 0, TE: 0, D: 0, AC: 0 };
+}
+
+function inferCountsFromCharges(charges: Charge[]) {
+  const c = emptyCounts();
+
+  for (const ch of charges ?? []) {
+    if (ch.kind !== "Normal") continue;
+    const concept = String(ch.concept ?? "").toUpperCase();
+
+    if (concept.includes("(A)")) c.A += safeNum(ch.qty);
+    else if (concept.includes("(N)")) c.N += safeNum(ch.qty);
+    else if (concept.includes("(TE)")) c.TE += safeNum(ch.qty);
+    else if (concept.includes("(D)")) c.D += safeNum(ch.qty);
+    else if (concept.includes("(AC)")) c.AC += safeNum(ch.qty);
+  }
+
+  const total = c.A + c.N + c.TE + c.D + c.AC;
+  return { counts: c, peopleCount: total };
+}
+
+// ✅ migración: repara cuentas viejas que no guardaban peopleCount/counts
+function migratePeopleFields(s: Store) {
+  let changed = false;
+
+  // asegura objetos base (por si existen stores viejos)
+  if (!("chargesByAccount" in s)) (s as any).chargesByAccount = {};
+  if (!("paymentsByAccount" in s)) (s as any).paymentsByAccount = {};
+  if (!("passesByHolder" in s)) (s as any).passesByHolder = {};
+
+  for (const a of s.accounts ?? []) {
+    const pc = Number((a as any).peopleCount);
+    const hasPeople = Number.isFinite(pc) && pc > 0;
+    const hasCounts = !!(a as any).counts;
+
+    if (hasPeople && hasCounts) continue;
+
+    const charges = s.chargesByAccount[a.id] ?? [];
+    const inf = inferCountsFromCharges(charges);
+
+    // fallback para pases (si no hay cargos normales)
+    const isPass =
+      String((a as any).entryType ?? "").toLowerCase() === "pass" ||
+      String((a as any).entryType ?? "").toLowerCase() === "tarjeta 10 pases";
+
+    const finalPeople = inf.peopleCount > 0 ? inf.peopleCount : isPass ? 1 : 0;
+
+    (a as any).peopleCount = finalPeople;
+    (a as any).counts = inf.counts;
+
+    changed = true;
+  }
+
+  return { changed, store: s };
+}
+
+/* ------------------ store ------------------ */
 function freshStore(): Store {
   return {
     day: todayStr(),
@@ -125,25 +196,34 @@ function freshStore(): Store {
     passesByHolder: {},
   };
 }
+
+function save(s: Store) {
+  if (!isSSR()) localStorage.setItem(KEY, JSON.stringify(s));
+}
+
 function load(): Store {
   if (isSSR()) return freshStore();
+
   const raw = localStorage.getItem(KEY);
   if (!raw) {
     const init = freshStore();
-    localStorage.setItem(KEY, JSON.stringify(init));
+    save(init);
     return init;
   }
+
   const s = JSON.parse(raw) as Store;
+
   if (s.day !== todayStr()) {
     const init = freshStore();
-    localStorage.setItem(KEY, JSON.stringify(init));
+    save(init);
     return init;
   }
-  if (!("passesByHolder" in s)) (s as any).passesByHolder = {};
-  return s;
-}
-function save(s: Store) {
-  if (!isSSR()) localStorage.setItem(KEY, JSON.stringify(s));
+
+  // ✅ MIGRACIÓN (recalcula y persiste)
+  const mig = migratePeopleFields(s);
+  if (mig.changed) save(mig.store);
+
+  return mig.store;
 }
 
 /* ------------------ API cuentas ------------------ */
@@ -155,13 +235,15 @@ export async function getAccount(id: string): Promise<AccountSummary> {
   const s = load();
   const acc = s.accounts.find((a) => a.id === id);
   if (!acc) throw new Error("Cuenta no encontrada.");
+
   const charges = s.chargesByAccount[id] ?? [];
   const payments = s.paymentsByAccount[id] ?? [];
   const totalCargos = charges.reduce((ac, c) => ac + c.total, 0);
   const totalPagos = payments.reduce((ac, p) => ac + p.amount, 0);
+
   return {
     id,
-    clientId: acc.clientId,              
+    clientId: acc.clientId,
     clientName: acc.clientName,
     status: acc.status,
     openedAt: acc.openedAt,
@@ -170,12 +252,14 @@ export async function getAccount(id: string): Promise<AccountSummary> {
     totalPagos,
     saldo: totalCargos - totalPagos,
 
-    gender: acc.gender,                  // opcional
-    entryType: acc.entryType,            // opcional
-    requiresParking: acc.requiresParking ?? false, // opcional
-    keys: acc.keys,                      // opcional
-  };
+    gender: acc.gender,
+    entryType: acc.entryType,
+    requiresParking: acc.requiresParking ?? false,
+    keys: acc.keys,
 
+    peopleCount: acc.peopleCount,
+    counts: acc.counts,
+  };
 }
 
 export async function listCharges(id: string) {
@@ -185,14 +269,20 @@ export async function listPayments(id: string) {
   return load().paymentsByAccount[id] ?? [];
 }
 
-/* ------------------ NUEVO: editar cuenta ------------------ */
+/* ------------------ editar cuenta ------------------ */
 export async function updateAccount(
   accountId: string,
-  input: Partial<Pick<PosAccount, "clientName" | "gender" | "entryType" | "requiresParking" | "keys">>
+  input: Partial<
+    Pick<
+      PosAccount,
+      "clientName" | "gender" | "entryType" | "requiresParking" | "keys" | "peopleCount" | "counts"
+    >
+  >
 ): Promise<PosAccount> {
   const s = load();
   const idx = s.accounts.findIndex((a) => a.id === accountId);
   if (idx === -1) throw new Error("Cuenta no encontrada.");
+
   const current = s.accounts[idx];
   if (current.status !== "Abierta") throw new Error("Solo se puede editar una cuenta abierta.");
 
@@ -230,6 +320,13 @@ export async function addCharge(
   };
   s.chargesByAccount[accountId] = [ch, ...list];
   save(s);
+
+  // ✅ si agregas cargos normales luego, re-sincroniza peopleCount/counts
+  if (ch.kind === "Normal") {
+    const inf = inferCountsFromCharges(s.chargesByAccount[accountId]);
+    await updateAccount(accountId, { peopleCount: inf.peopleCount, counts: inf.counts });
+  }
+
   return ch;
 }
 
@@ -298,6 +395,13 @@ export async function updateCharge(
   list[idx] = next;
   s.chargesByAccount[accountId] = list;
   save(s);
+
+  // ✅ re-sincroniza peopleCount/counts si es Normal
+  if (next.kind === "Normal") {
+    const inf = inferCountsFromCharges(s.chargesByAccount[accountId]);
+    await updateAccount(accountId, { peopleCount: inf.peopleCount, counts: inf.counts });
+  }
+
   return next;
 }
 
@@ -315,6 +419,12 @@ export async function deleteCharge(accountId: string, chargeId: string) {
 
   s.chargesByAccount[accountId] = list.filter((c) => c.id !== chargeId);
   save(s);
+
+  // ✅ re-sincroniza peopleCount/counts si borraste Normal
+  if (target.kind === "Normal") {
+    const inf = inferCountsFromCharges(s.chargesByAccount[accountId] ?? []);
+    await updateAccount(accountId, { peopleCount: inf.peopleCount, counts: inf.counts });
+  }
 }
 
 /* ------------------ llaves mutables en cuenta (local store) ------------------ */
@@ -332,12 +442,14 @@ export async function closeAccount(id: string): Promise<PosAccount | undefined> 
   const s = load();
   const idx = s.accounts.findIndex((a) => a.id === id);
   if (idx === -1) return;
+
   const now = nowISO();
   const updated: PosAccount = {
     ...s.accounts[idx],
     status: "Cerrada",
     closedAt: now,
   };
+
   s.accounts[idx] = updated;
   save(s);
 
@@ -378,13 +490,13 @@ export function printAccountReceipt(accountId: string) {
   if (!win) return;
 
   function cleanConcept(v: string) {
-  return String(v ?? "")
-    .replace(/^bar:\s*/i, "")          // quita "Bar: "
-    .replace(/\s*\(\s*[AN]\s*\)\s*$/i, "") // quita "(A)" o "(N)" al final
-    .trim();
-}
+    return String(v ?? "")
+      .replace(/^bar:\s*/i, "") // quita "Bar: "
+      .replace(/\s*\(\s*[AN]\s*\)\s*$/i, "") // quita "(A)" o "(N)" al final
+      .trim();
+  }
 
-    const chargesRows = printableCharges
+  const chargesRows = printableCharges
     .map(
       (c) => `
       <tr>
@@ -526,6 +638,7 @@ export async function createPassForHolder(holderName: string) {
   const key = normName(holderName);
   const existing = s.passesByHolder[key];
   if (existing?.active) return existing;
+
   const rec: PassRecord = {
     id: uid("pass"),
     holderName,
@@ -574,7 +687,12 @@ export async function openAccount(input: {
     keys: input.keys,
     entryType: input.entryType,
     requiresParking: input.requiresParking ?? false,
+
+    // ✅ GUARDA PERSONAS (esto arregla Dashboard)
+    peopleCount: safeNum(input.peopleCount),
+    counts: input.counts,
   };
+
   s.accounts = [account, ...s.accounts];
 
   const charges: Charge[] = [];
