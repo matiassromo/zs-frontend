@@ -83,10 +83,10 @@ export default function LlavesPage() {
   return (
     <div className="p-6 space-y-8">
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Gestión de Llaves</h1>
+        <h1 className="text-3xl font-bold">Gestión de Lockers</h1>
         <div className="flex items-center gap-3">
           <div className="text-sm text-muted-foreground">
-            32 llaves totales · {libresH + libresM} disponibles
+            32 Lockers totales · {libresH + libresM} disponibles
           </div>
           <Button
             size="sm"

@@ -1,7 +1,7 @@
 // src/components/pos/AccountDetail.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getAccount,
   listCharges,
@@ -100,6 +100,8 @@ export default function AccountDetail({
   // ✅ estado POS habilitado por caja diaria (según fecha de la cuenta)
   const [posEnabled, setPosEnabled] = useState(true);
   const [posReason, setPosReason] = useState<string | null>(null);
+  const lastScrollYRef = useRef(0);
+
 
   async function loadAll() {
     setLoading(true);
@@ -160,6 +162,22 @@ export default function AccountDetail({
     return summary.saldo > 0 ? "text-rose-600" : "text-emerald-600";
   }, [summary]);
 
+    const hasPendingCharges = useMemo(() => {
+    return charges.some((c) => {
+      const isKey = c.kind === "Key";
+      const isZero = c.total <= 0;
+      if (isKey || isZero) return false; // no bloquean cierre
+      return c.status !== "Pagado";
+    });
+  }, [charges]);
+
+  const closeDisabledReason = useMemo(() => {
+    if (!posEnabled) return posReason ?? "POS cerrado para este día.";
+    if (hasPendingCharges) return "No puedes cerrar: aún hay cargos pendientes por pagar.";
+    return null;
+  }, [posEnabled, posReason, hasPendingCharges]);
+
+
   function findChargePaidMethod(chargeId: string): PayMethod | null {
     const tag = `charge:${chargeId}`;
     const p = [...payments]
@@ -174,52 +192,62 @@ export default function AccountDetail({
     return null;
   }
 
-  async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
-    if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
-    const c = charges.find((x) => x.id === form.chargeId);
-    if (!c) return;
+async function handlePayCharge(form: { chargeId: string; method: PayMethod }) {
+  if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
 
-    // ✅ llaves no se pagan (no tiene sentido registrar pago)
-    if (c.kind === "Key") return;
+  // ✅ guarda scroll antes de refrescar/cerrar modal
+  lastScrollYRef.current = window.scrollY;
 
-    if (c.total <= 0) {
-  throw new Error("No se puede registrar pago cuando el total es $0.00");
+  const c = charges.find((x) => x.id === form.chargeId);
+  if (!c) return;
+  if (c.kind === "Key") return;
+
+  if (c.total <= 0) {
+    throw new Error("No se puede registrar pago cuando el total es $0.00");
+  }
+
+  await addPayment(accountId, {
+    method: form.method,
+    amount: c.total,
+    note: `charge:${form.chargeId}`,
+  });
+
+  await markChargePaid(accountId, form.chargeId);
+
+  const dk = toDateKey(new Date(summary?.openedAt ?? new Date()));
+  addPosPaymentMove({
+    dateKey: dk,
+    amount: c.total,
+    method: form.method,
+    concept: `Cuenta #${accountId} · ${summary?.clientName ?? ""} · ${c.concept}`,
+    createdBy: "pos",
+    ref: { kind: "Charge", id: c.id },
+  });
+
+  await loadAll();
+  setPayChargeId(null);
+
+  // ✅ vuelve al mismo scroll (evita que suba)
+  requestAnimationFrame(() => {
+    window.scrollTo({ top: lastScrollYRef.current, left: 0, behavior: "auto" });
+  });
+
+  emitCashboxChanged(dk);
+  onChanged?.();
 }
 
-
-    await addPayment(accountId, {
-      method: form.method,
-      amount: c.total,
-      note: `charge:${form.chargeId}`,
-    });
-
-    await markChargePaid(accountId, form.chargeId);
-
-        // ✅ registrar ingreso en Caja Diaria (local) para el día de la cuenta
-    const dk = toDateKey(new Date(summary?.openedAt ?? new Date()));
-    addPosPaymentMove({
-      dateKey: dk,
-      amount: c.total,
-      method: form.method,
-      concept: `Cuenta #${accountId} · ${summary?.clientName ?? ""} · ${c.concept}`,
-      createdBy: "pos",
-      ref: { kind: "Charge", id: c.id },
-    });
-
-
-    await loadAll();
-    setPayChargeId(null);
-
-    // ✅ notifica a Caja Diaria para que refresque y vea pagos del día
-       emitCashboxChanged(dk);
-
-
-    onChanged?.();
-  }
 
   async function handleCloseAccount() {
     if (!posEnabled) return;
     if (closing) return;
+
+    // ✅ NO cerrar si quedan cargos pendientes (no Key y total>0)
+    const pending = charges.some((c) => c.kind !== "Key" && c.total > 0 && c.status !== "Pagado");
+    if (pending) {
+      alert("No puedes cerrar la cuenta: existen cargos pendientes por pagar.");
+      return;
+    }
+
     setClosing(true);
     try {
       await closeAccount(accountId);
@@ -229,6 +257,7 @@ export default function AccountDetail({
       setClosing(false);
     }
   }
+
 
   async function handlePrintReceipt() {
     if (printing) return;
@@ -418,7 +447,8 @@ export default function AccountDetail({
             {summary.status === "Abierta" && (
               <button
                 onClick={handleCloseAccount}
-                disabled={closing || !posEnabled}
+                disabled={closing || !posEnabled || hasPendingCharges}
+                title={closeDisabledReason ?? undefined}
                 className={
                   "inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-medium text-white " +
                   (closing ? "bg-rose-400 cursor-not-allowed" : "bg-rose-600 hover:bg-rose-700") +

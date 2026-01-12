@@ -142,7 +142,7 @@ export default function PanelZeroStress() {
 
             <div className="rounded-xl border border-neutral-100 bg-neutral-50/70 px-3 py-2.5 text-xs">
               <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-                Ocupación de llaves
+                Ocupación de Lockers
               </div>
               <div className="mt-1 text-xl font-semibold text-neutral-900">
                 {loading ? "…" : `${ocupacionLlaves}%`}
@@ -223,9 +223,9 @@ export default function PanelZeroStress() {
             tone="success"
           />
           <MetricCard
-            title="Llaves disponibles"
+            title="Lockers disponibles"
             value={loading ? "…" : String(llavesDisponibles)}
-            subtitle={loading ? "" : `De ${llavesTotales} llaves totales`}
+            subtitle={loading ? "" : `De ${llavesTotales} Lockers totales`}
           />
         </div>
       </section>
@@ -271,7 +271,7 @@ export default function PanelZeroStress() {
             href="/parqueadero"
           />
           <ModuleCard
-            title="Llaves"
+            title="Lockers"
             subtitle="Asignación de lockers y vestidores"
             href="/llaves"
           />

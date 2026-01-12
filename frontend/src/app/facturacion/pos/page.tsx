@@ -72,6 +72,7 @@ export default function PosPage() {
       <div className="sticky top-0 z-10 -mx-4 mb-4 border-b bg-white/80 px-4 py-4 backdrop-blur">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
+
             <p className="mt-1 text-xs md:text-sm text-neutral-500">
               Selecciona una cuenta para ver cargos, pagos y acciones.
             </p>
@@ -119,7 +120,7 @@ export default function PosPage() {
       {loading ? (
         <div className="rounded-2xl border bg-white p-6 text-sm text-neutral-500">Cargando…</div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[420px_minmax(0,1fr)] items-start">
+        <div className="grid gap-4">
           {/* Left rail */}
           <aside className="rounded-2xl border bg-white shadow-sm overflow-hidden">
             {/* Tabs + search */}
@@ -175,7 +176,7 @@ export default function PosPage() {
             </div>
 
             {/* List */}
-            <div className="max-h-[70vh] overflow-auto p-3">
+            <div className="max-h-[50vh] overflow-auto p-3">
               {filtered.length === 0 ? (
                 <div className="rounded-xl border border-dashed bg-neutral-50 p-4 text-sm text-neutral-500">
                   No hay resultados para la búsqueda.
@@ -187,19 +188,12 @@ export default function PosPage() {
 
                     const timeLabel =
                       tab === "open"
-                        ? new Date(acc.openedAt).toLocaleTimeString("es-EC", {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })
+                        ? new Date(acc.openedAt).toLocaleTimeString("es-EC", { hour: "2-digit", minute: "2-digit" })
                         : acc.closedAt
-                          ? new Date(acc.closedAt).toLocaleTimeString("es-EC", {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })
+                          ? new Date(acc.closedAt).toLocaleTimeString("es-EC", { hour: "2-digit", minute: "2-digit" })
                           : "—";
 
-                    const typeLabel =
-                      acc.entryType === "normal" ? "Normal" : "Tarjeta 10 pases";
+                    const typeLabel = acc.entryType === "normal" ? "Normal" : "Tarjeta 10 pases";
 
                     return (
                       <button
@@ -208,20 +202,14 @@ export default function PosPage() {
                         type="button"
                         className={
                           "w-full text-left rounded-xl border p-3 transition shadow-sm " +
-                          (isSelected
-                            ? "border-blue-400 bg-blue-50"
-                            : "border-neutral-200 bg-white hover:bg-neutral-50")
+                          (isSelected ? "border-blue-400 bg-blue-50" : "border-neutral-200 bg-white hover:bg-neutral-50")
                         }
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
-                              <span className="text-sm font-semibold text-neutral-900">
-                                #{acc.id}
-                              </span>
-                              <span className="truncate text-xs text-neutral-500">
-                                {acc.clientName}
-                              </span>
+                              <span className="text-sm font-semibold text-neutral-900">#{acc.id}</span>
+                              <span className="truncate text-xs text-neutral-500">{acc.clientName}</span>
                             </div>
 
                             <div className="mt-1 flex flex-wrap gap-2">
@@ -237,9 +225,7 @@ export default function PosPage() {
                           <span
                             className={
                               "shrink-0 rounded-full px-2 py-1 text-[11px] font-medium " +
-                              (tab === "open"
-                                ? "bg-emerald-100 text-emerald-700"
-                                : "bg-neutral-100 text-neutral-700")
+                              (tab === "open" ? "bg-emerald-100 text-emerald-700" : "bg-neutral-100 text-neutral-700")
                             }
                           >
                             {tab === "open" ? "Abierta" : "Cerrada"}
@@ -253,35 +239,33 @@ export default function PosPage() {
             </div>
           </aside>
 
-          {/* Right detail */}
-          <main className="min-w-0">
+          {/* Detail BELOW */}
+          <section className="min-w-0">
             {selectedId ? (
-              <div className="rounded-2xl border bg-white shadow-sm">
+              <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
                 <div className="border-b px-4 py-3">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                    Detalle de cuenta
-                  </div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Detalle de cuenta</div>
                   <div className="text-sm text-neutral-600">
                     Cuenta <span className="font-semibold text-neutral-900">#{selectedId}</span>
                   </div>
                 </div>
 
-                <div className="p-4">
+                {/* IMPORTANTE: no envuelvas AccountDetail con padding extra grande si quieres ancho completo */}
+                <div className="p-0">
                   <AccountDetail accountId={selectedId} onChanged={load} />
                 </div>
               </div>
             ) : (
               <div className="rounded-2xl border bg-white p-8 text-sm text-neutral-500 shadow-sm">
-                <div className="text-base font-semibold text-neutral-900">
-                  Selecciona una cuenta
-                </div>
+                <div className="text-base font-semibold text-neutral-900">Selecciona una cuenta</div>
                 <div className="mt-1">
-                  Usa la lista de la izquierda para abrir el detalle, registrar pagos, agregar cargos o imprimir comprobantes.
+                  Usa la lista de arriba para abrir el detalle, registrar pagos, agregar cargos o imprimir comprobantes.
                 </div>
               </div>
             )}
-          </main>
+          </section>
         </div>
+
       )}
 
       {openCreate && (
