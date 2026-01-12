@@ -8,12 +8,98 @@ import { createClient, updateClient, UpsertClientInput } from "@/lib/api/clients
 import Swal from "sweetalert2";
 import { confirm, toast } from "@/lib/ui/swal";
 
+/* ----------------- VALIDACIONES ECUADOR: CÉDULA / RUC ----------------- */
+
+function isAllDigits(s: string) {
+  return /^\d+$/.test(s);
+}
+
+function validateCedulaEC(cedula: string): boolean {
+  if (!isAllDigits(cedula) || cedula.length !== 10) return false;
+
+  const provincia = parseInt(cedula.slice(0, 2), 10);
+  const tercer = parseInt(cedula[2], 10);
+
+  // Provincia 01-24
+  if (provincia < 1 || provincia > 24) return false;
+
+  // Persona natural: 0-5
+  if (tercer < 0 || tercer > 5) return false;
+
+  const digits = cedula.split("").map((c) => parseInt(c, 10));
+  const verificador = digits[9];
+
+  let suma = 0;
+  for (let i = 0; i < 9; i++) {
+    let v = digits[i];
+    if (i % 2 === 0) {
+      v = v * 2;
+      if (v > 9) v -= 9;
+    }
+    suma += v;
+  }
+
+  const decena = Math.ceil(suma / 10) * 10;
+  const dig = (decena - suma) % 10;
+
+  return dig === verificador;
+}
+
+function validateRucEC(ruc: string): boolean {
+  if (!isAllDigits(ruc) || ruc.length !== 13) return false;
+
+  const provincia = parseInt(ruc.slice(0, 2), 10);
+  if (provincia < 1 || provincia > 24) return false;
+
+  const tercer = parseInt(ruc[2], 10);
+  const establecimiento = ruc.slice(10, 13);
+
+  // Establecimiento no puede ser 000
+  if (establecimiento === "000") return false;
+
+  // RUC persona natural (0-5): primeros 10 deben ser cédula válida
+  if (tercer >= 0 && tercer <= 5) {
+    return validateCedulaEC(ruc.slice(0, 10));
+  }
+
+  // Privadas (9) / Públicas (6): aquí solo validación estructural mínima
+  if (tercer === 6 || tercer === 9) {
+    return true;
+  }
+
+  return false;
+}
+
+function validateNationalIdEC(value: string): { ok: boolean; msg?: string } {
+  const v = value.trim();
+
+  if (!isAllDigits(v)) return { ok: false, msg: "Solo números" };
+  if (!(v.length === 10 || v.length === 13))
+    return { ok: false, msg: "Debe tener 10 (cédula) o 13 (RUC) dígitos" };
+
+  if (v.length === 10) {
+    return validateCedulaEC(v) ? { ok: true } : { ok: false, msg: "Cédula inválida" };
+  }
+
+  return validateRucEC(v) ? { ok: true } : { ok: false, msg: "RUC inválido" };
+}
+
+/* ----------------- SCHEMA ----------------- */
+
 const schema = z.object({
   nationalId: z
     .string()
-    .min(10, "La cédula debe tener 10 dígitos")
-    .max(10, "Máx 10 dígitos")
-    .regex(/^\d+$/, "Solo números"),
+    .min(10, "Debe tener 10 (cédula) o 13 (RUC) dígitos")
+    .max(13, "Máx 13 dígitos")
+    .superRefine((val, ctx) => {
+      const r = validateNationalIdEC(val);
+      if (!r.ok) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: r.msg ?? "ID inválido",
+        });
+      }
+    }),
   name: z.string().min(1, "Nombre obligatorio").max(50, "Máx 50 caracteres"),
   email: z.string().email("Correo inválido"),
   address: z.string().min(1, "Dirección obligatoria").max(300, "Máx 300 caracteres"),
@@ -36,6 +122,7 @@ export default function ClientForm({
   id?: string;
 }) {
   const router = useRouter();
+
   const {
     register,
     handleSubmit,
@@ -53,64 +140,69 @@ export default function ClientForm({
     },
   });
 
- const onSubmit = async (data: ClientFormValues) => {
-  try {
-    const payload: UpsertClientInput = { ...data };
+  const onSubmit = async (data: ClientFormValues) => {
+    try {
+      // Backend actual limita a 10, así que si ingresan RUC (13) guardamos base 10.
+      const nid = data.nationalId.trim();
+      const nationalIdForBackend = nid.length === 13 ? nid.slice(0, 10) : nid;
 
-    if (mode === "edit" && id) {
-      // 3.1 Confirmar EDICIÓN
-      const res = await confirm({
-        title: "Guardar cambios",
-        text: "Se actualizarán los datos del cliente.",
-        confirmButtonText: "Sí, guardar",
-      });
-      if (!res.isConfirmed) return;
+      const payload: UpsertClientInput = {
+        ...data,
+        nationalId: nationalIdForBackend,
+      };
 
-      // opcional loading mientras guarda
-      Swal.showLoading();
-      await updateClient(id, payload);
-      await Swal.fire({
-        icon: "success",
-        title: "Cambios guardados",
-        timer: 1400,
-        showConfirmButton: false,
-      });
-      router.push("/clientes");
-      return;
-    }
+      if (mode === "edit" && id) {
+        const res = await confirm({
+          title: "Guardar cambios",
+          text: "Se actualizarán los datos del cliente.",
+          confirmButtonText: "Sí, guardar",
+        });
+        if (!res.isConfirmed) return;
 
-    if (mode === "create") {
-      // 3.2 Crear y mostrar opciones tras CREAR
-      Swal.showLoading();
-      await createClient(payload);
+        Swal.showLoading();
+        await updateClient(id, payload);
 
-      const r = await Swal.fire({
-        icon: "success",
-        title: "Cliente creado",
-        text: "¿Qué deseas hacer ahora?",
-        showDenyButton: true,
-        confirmButtonText: "Ir al listado",
-        denyButtonText: "Crear otro",
-        reverseButtons: true,
-      });
+        await Swal.fire({
+          icon: "success",
+          title: "Cambios guardados",
+          timer: 1400,
+          showConfirmButton: false,
+        });
 
-      if (r.isConfirmed) {
         router.push("/clientes");
-      } else {
-        // Crear otro: limpiar el form y mostrar toast
-        reset();
-        toast("info", "Formulario listo para un nuevo cliente");
+        return;
       }
-      return;
+
+      if (mode === "create") {
+        Swal.showLoading();
+        await createClient(payload);
+
+        const r = await Swal.fire({
+          icon: "success",
+          title: "Cliente creado",
+          text: "¿Qué deseas hacer ahora?",
+          showDenyButton: true,
+          confirmButtonText: "Ir al listado",
+          denyButtonText: "Crear otro",
+          reverseButtons: true,
+        });
+
+        if (r.isConfirmed) {
+          router.push("/clientes");
+        } else {
+          reset();
+          toast("info", "Formulario listo para un nuevo cliente");
+        }
+        return;
+      }
+    } catch (e: any) {
+      await Swal.fire({
+        icon: "error",
+        title: "No se pudo guardar",
+        text: e?.message ?? "Error guardando cliente",
+      });
     }
-  } catch (e: any) {
-    await Swal.fire({
-      icon: "error",
-      title: "No se pudo guardar",
-      text: e?.message ?? "Error guardando cliente",
-    });
-  }
-};
+  };
 
   const inputCls =
     "w-full rounded-2xl border border-neutral-300 bg-white px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500";
@@ -119,15 +211,15 @@ export default function ClientForm({
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
-      {/* Cédula */}
+      {/* Cédula / RUC */}
       <div>
-        <label className={labelCls}>Cédula / National ID</label>
+        <label className={labelCls}>Cédula / RUC</label>
         <input
           type="text"
           inputMode="numeric"
-          maxLength={10}
+          maxLength={13}
           className={inputCls}
-          placeholder="1724567890"
+          placeholder="1724567890 o 1724567890001"
           {...register("nationalId")}
         />
         {errors.nationalId && <p className={errCls}>{errors.nationalId.message}</p>}
@@ -192,21 +284,23 @@ export default function ClientForm({
           disabled={isSubmitting}
           className="rounded-full px-5 py-2.5 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 shadow-sm"
         >
-          💾 Guardar Cliente
+          Guardar Cliente
         </button>
+
         <button
           type="button"
           onClick={() => reset()}
           className="rounded-full border border-neutral-300 bg-white px-5 py-2.5 hover:bg-neutral-50"
         >
-          🧹 Limpiar Campos
+          Limpiar Campos
         </button>
+
         <button
           type="button"
           onClick={() => router.push("/clientes")}
           className="rounded-full border border-neutral-300 bg-white px-5 py-2.5 hover:bg-neutral-50"
         >
-          ⬅️ Volver
+          Volver
         </button>
       </div>
     </form>

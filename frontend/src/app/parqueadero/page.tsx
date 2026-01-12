@@ -153,7 +153,6 @@ export default function ParkingPage() {
 
   return (
     <div className="p-8 space-y-8">
-      <h1 className="text-2xl font-semibold">Parqueadero</h1>
 
       {/* Registrar ingreso */}
       <section className="bg-white rounded-xl shadow p-6 space-y-4">

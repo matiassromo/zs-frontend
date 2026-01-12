@@ -35,7 +35,6 @@ export default function ClientesPage() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-semibold">Clientes</h1>
         <Link
           href="/clientes/nuevo"
           className="rounded-full px-5 py-2.5 bg-blue-600 text-white hover:bg-blue-700 shadow-sm"
