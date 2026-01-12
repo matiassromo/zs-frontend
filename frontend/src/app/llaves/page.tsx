@@ -7,6 +7,8 @@ import type { Key } from "@/types/key";
 import type { LockerKey, LockerZone } from "@/types/lockerKey";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import Swal from "sweetalert2";
+
 
 const SINCE_MAP_KEY = "zs:keys:sinceMap";
 
@@ -90,17 +92,31 @@ export default function LlavesPage() {
           }
 
           // si NO viene del backend, usamos localStorage (desde que la vimos asignada)
-          if (!since) {
-            if (!sinceMap[k.id]) {
-              sinceMap[k.id] = new Date().toISOString();
-              sinceMapChanged = true;
-            }
-            since = sinceMap[k.id];
+          // si NO viene del backend, usamos localStorage, pero reiniciamos si cambió el asignado
+        if (!since) {
+          const fp = `${client ?? ""}|${cleanNote ?? ""}`; // huella del asignado actual
+          const stored = sinceMap[k.id]; // puede ser string viejo
+
+          const storedSince = typeof stored === "string" ? stored : null;
+          const storedFpKey = `__fp:${k.id}`;
+
+          const prevFp = (sinceMap as any)[storedFpKey] as string | undefined;
+
+          // si nunca se guardó o cambió de persona/cuenta -> reinicia
+          if (!storedSince || prevFp !== fp) {
+            sinceMap[k.id] = new Date().toISOString();
+            (sinceMap as any)[storedFpKey] = fp;
+            sinceMapChanged = true;
           }
+
+          since = sinceMap[k.id];
+        }
+
         } else {
           // si ya está libre, limpiamos el since guardado
           if (sinceMap[k.id]) {
             delete sinceMap[k.id];
+            delete (sinceMap as any)[`__fp:${k.id}`];
             sinceMapChanged = true;
           }
           since = null;
@@ -189,6 +205,7 @@ export default function LlavesPage() {
           list={hombres}
           loading={loading}
           badgeClass="bg-blue-100 text-blue-700"
+          onRelease={doRelease}
         />
         <KeyPanel
           title="Llaves Vestidor Mujeres (1M - 16M)"
@@ -196,6 +213,7 @@ export default function LlavesPage() {
           list={mujeres}
           loading={loading}
           badgeClass="bg-pink-100 text-pink-700"
+          onRelease={doRelease}
         />
       </div>
 
@@ -212,13 +230,17 @@ function KeyPanel({
   list,
   loading,
   badgeClass,
+  onRelease,
 }: {
   title: string;
   hint: string;
   list: LockerKey[];
   loading: boolean;
   badgeClass: string;
+  onRelease: (code: string) => Promise<void>;
 }) {
+
+  
   return (
     <div className="rounded-2xl border bg-card p-5">
       <div className="flex items-center justify-between mb-4">
@@ -235,7 +257,7 @@ function KeyPanel({
         {list
           .sort((a, b) => parseInt(a.code) - parseInt(b.code))
           .map((k) => (
-            <KeyCard key={k.id} k={k} />
+            <KeyCard key={k.id} k={k} onRelease={onRelease}/>
           ))}
         {loading && (
           <div className="col-span-4 text-sm text-muted-foreground">
@@ -247,19 +269,52 @@ function KeyPanel({
   );
 }
 
-function KeyCard({ k }: { k: LockerKey }) {
+function KeyCard({
+  k,
+  onRelease,
+}: {
+  k: LockerKey;
+  onRelease: (code: string) => Promise<void>;
+}) {
   const busy = k.status === "ocupada";
+
   return (
-    <div
+    <button
+      type="button"
+      disabled={!busy}
+      onClick={async () => {
+        if (!busy) return;
+
+        const res = await Swal.fire({
+          icon: "question",
+          title: `¿Liberar ${k.code}?`,
+          text: `Asignada a: ${k.assignedTo ?? "—"}`,
+          showCancelButton: true,
+          confirmButtonText: "Sí, liberar",
+          cancelButtonText: "Cancelar",
+        });
+
+        if (!res.isConfirmed) return;
+
+        await onRelease(k.code);
+
+        await Swal.fire({
+          icon: "success",
+          title: "Llave liberada",
+          timer: 900,
+          showConfirmButton: false,
+        });
+      }}
       className={cn(
-        "aspect-[1/1] rounded-xl border flex flex-col items-center justify-center gap-1",
+        "aspect-[1/1] rounded-xl border flex flex-col items-center justify-center gap-1 transition",
         busy
-          ? "bg-red-50 border-red-200"
-          : "bg-emerald-50 border-emerald-200"
+          ? "bg-red-50 border-red-200 hover:bg-red-100 cursor-pointer"
+          : "bg-emerald-50 border-emerald-200 cursor-default"
       )}
-      title={busy ? `Ocupada: ${k.assignedTo ?? ""}` : "Libre"}
+      title={busy ? `Click para liberar · ${k.assignedTo ?? ""}` : "Libre"}
     >
       <div className="text-lg font-semibold">{k.code}</div>
+
       <div
         className={cn(
           "text-xs px-2 py-0.5 rounded-full",
@@ -268,14 +323,16 @@ function KeyCard({ k }: { k: LockerKey }) {
       >
         {busy ? "Ocupada" : "Libre"}
       </div>
+
       {busy && (
         <div className="text-[11px] text-muted-foreground line-clamp-1">
           {k.assignedTo}
         </div>
       )}
-    </div>
+    </button>
   );
 }
+
 
 function KeyTable({
   list,

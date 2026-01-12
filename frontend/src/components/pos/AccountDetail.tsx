@@ -17,6 +17,9 @@ import {
   type Payment,
 } from "@/lib/api/accounts";
 
+import { listKeys } from "@/lib/apiv2/keys";
+import Swal from "sweetalert2";
+
 // ✅ modal unificado create/edit
 import AccountFormModal from "@/components/pos/AccountFormModal";
 import { toDateKey, getCashboxByDate, addPosPaymentMove } from "@/lib/apiv2/cashbox";
@@ -207,6 +210,26 @@ export default function AccountDetail({
   async function handleCloseAccount() {
     if (!posEnabled) return;
     if (closing) return;
+    
+
+    // ✅ Validación: no cerrar si existen llaves aún ocupadas por esta cuenta
+    const allKeys = await listKeys();
+    const stillBusy = allKeys.filter((k: any) => {
+      if (k.available) return false;
+      const note = String(k.notes ?? "");
+      return note.includes(`Cuenta ${accountId}`);
+    });
+
+    if (stillBusy.length > 0) {
+      await Swal.fire({
+        icon: "warning",
+        title: "No puedes cerrar la cuenta",
+        text: "Aún hay llaves asignadas a esta cuenta. Debes liberarlas/entregarlas primero.",
+        confirmButtonText: "Entendido",
+      });
+      return;
+    }
+
 
     const pending = charges.some((c) => c.kind !== "Key" && c.total > 0 && c.status !== "Pagado");
     if (pending) {
