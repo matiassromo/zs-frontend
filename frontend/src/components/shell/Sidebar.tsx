@@ -35,18 +35,20 @@ const items: NavItem[] = [
 export default function Sidebar() {
   const pathname = usePathname();
 
-  // abrir por defecto si estoy en una subruta de facturación
-  const defaultOpen = useMemo(
+  // En facturación debe abrirse siempre (para que se vea la subruta activa).
+  const isFacturacionRoute = useMemo(
     () => pathname.startsWith("/facturacion") || pathname === "/pos",
     [pathname]
   );
 
+  // Estado manual (no se cierra al navegar a otros módulos).
   const [openFacturacion, setOpenFacturacion] = useState(false);
 
-  // ✅ CLAVE: mantener el grupo sincronizado con la ruta actual
+  // Solo fuerza "abrir" cuando estás dentro de facturación.
+  // NO fuerza "cerrar" cuando sales (para que no se comprima Punto de Venta / Caja Diaria).
   useEffect(() => {
-    setOpenFacturacion(defaultOpen);
-  }, [defaultOpen]);
+    if (isFacturacionRoute) setOpenFacturacion(true);
+  }, [isFacturacionRoute]);
 
   return (
     <div className="h-full p-4 flex flex-col gap-4">
@@ -106,49 +108,68 @@ export default function Sidebar() {
             );
           }
 
-          // grupo: Facturación
-          const isGroupActive =
-            pathname.startsWith("/facturacion") || pathname === "/pos";
+          const groupActive = isFacturacionRoute;
+
+          const open = openFacturacion || groupActive;
 
           return (
             <div key={it.id} className="select-none">
               <button
                 type="button"
-                onClick={() => setOpenFacturacion((v) => !v)}
+                onClick={() => {
+                  // Si estás dentro de facturación, no permitas cerrar (evita esconder el item activo).
+                  if (groupActive) return;
+                  setOpenFacturacion((v) => !v);
+                }}
                 className={`w-full flex items-center justify-between rounded-xl px-3 py-2 text-sm transition-colors ${
-                  isGroupActive
+                  groupActive
                     ? "bg-blue-50 text-blue-700"
                     : "hover:bg-neutral-100 text-neutral-700"
                 }`}
               >
                 <span className="font-medium">{it.label}</span>
+
+                {/* Chevron con rotación suave */}
                 <span
-                  className={`i-lucide-chevron-${
-                    openFacturacion ? "up" : "down"
+                  className={`i-lucide-chevron-down transition-transform duration-300 ease-out ${
+                    open ? "rotate-180" : "rotate-0"
                   }`}
                 />
               </button>
 
-              {openFacturacion && (
-                <div className="mt-1 ml-2 flex flex-col gap-1 border-l border-neutral-200 pl-2">
-                  {it.children.map((c) => {
-                    const active = pathname === c.href;
-                    return (
-                      <Link
-                        key={c.href}
-                        href={c.href}
-                        className={`rounded-lg px-3 py-2 text-sm transition-colors ${
-                          active
-                            ? "bg-blue-600 text-white"
-                            : "hover:bg-neutral-100 text-neutral-700"
-                        }`}
-                      >
-                        {c.label}
-                      </Link>
-                    );
-                  })}
+              {/* Animación elegante: grid-rows + fade/slide */}
+              <div
+                className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+                  open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+                }`}
+              >
+                <div className="overflow-hidden">
+                  <div
+                    className={`mt-1 ml-2 flex flex-col gap-1 border-l border-neutral-200 pl-2 transition-all duration-300 ease-out ${
+                      open
+                        ? "opacity-100 translate-y-0"
+                        : "opacity-0 -translate-y-1"
+                    }`}
+                  >
+                    {it.children.map((c) => {
+                      const active = pathname === c.href;
+                      return (
+                        <Link
+                          key={c.href}
+                          href={c.href}
+                          className={`rounded-lg px-3 py-2 text-sm transition-colors ${
+                            active
+                              ? "bg-blue-600 text-white"
+                              : "hover:bg-neutral-100 text-neutral-700"
+                          }`}
+                        >
+                          {c.label}
+                        </Link>
+                      );
+                    })}
+                  </div>
                 </div>
-              )}
+              </div>
             </div>
           );
         })}
