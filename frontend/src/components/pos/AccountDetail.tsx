@@ -21,8 +21,9 @@ import {
 
 import { listKeys } from "@/lib/apiv2/keys";
 
-import Swal from "sweetalert2";
-import AddEntriesModal from "@/components/pos/AddEntriesModal";
+import { confirm, fire } from "@/lib/ui/swal";
+
+import AddEntriesModal from "@/components/pos/EditAccountModal";
 
 import { consumeAccessCardByHolder } from "@/lib/apiv2/accessCards";
 
@@ -252,12 +253,13 @@ export default function AccountDetail({
     });
 
     if (stillBusy.length > 0) {
-      await Swal.fire({
+      await fire({
         icon: "warning",
         title: "No puedes cerrar la cuenta",
         text: "Aún hay llaves asignadas a esta cuenta. Debes liberarlas/entregarlas primero.",
         confirmButtonText: "Entendido",
       });
+
       return;
     }
 
@@ -306,28 +308,28 @@ export default function AccountDetail({
     if (!posEnabled) return;
 
     if (summary?.status !== "Abierta") {
-      await Swal.fire({ icon: "info", title: "Cuenta cerrada", text: "No se puede eliminar en una cuenta cerrada." });
+      await fire({ icon: "info", title: "Cuenta cerrada", text: "No se puede eliminar en una cuenta cerrada." });
       return;
     }
 
     if (c.kind === "Key") {
-      await Swal.fire({ icon: "info", title: "No permitido", text: "El cargo de llaves no se elimina desde aquí." });
+      await fire({ icon: "info", title: "No permitido", text: "El cargo de llaves no se elimina desde aquí." });
       return;
     }
 
     if (c.status === "Pagado") {
-      await Swal.fire({ icon: "warning", title: "No permitido", text: "No se puede eliminar un cargo pagado." });
+      await fire({ icon: "warning", title: "No permitido", text: "No se puede eliminar un cargo pagado." });
       return;
     }
 
-    const ok = await Swal.fire({
+    const ok = await confirm({
       icon: "warning",
       title: "Eliminar cargo",
       text: `Se eliminará: ${c.concept} (x${c.qty})`,
-      showCancelButton: true,
       confirmButtonText: "Sí, eliminar",
       cancelButtonText: "Cancelar",
     });
+
 
     if (!ok.isConfirmed) return;
 
@@ -435,7 +437,7 @@ export default function AccountDetail({
                     disabled={!posEnabled}
                     className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-50 disabled:opacity-50"
                   >
-                    + Editar Cuenta
+                    Editar Cuenta
                   </button>
 
                   <button

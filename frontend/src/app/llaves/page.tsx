@@ -169,14 +169,6 @@ export default function LlavesPage() {
           <div className="text-sm text-muted-foreground">
             32 Lockers totales · {libresH + libresM} disponibles
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => load()}
-            disabled={loading}
-          >
-            Actualizar
-          </Button>
         </div>
       </div>
 

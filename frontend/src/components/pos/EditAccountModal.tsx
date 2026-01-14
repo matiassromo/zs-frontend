@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Swal from "sweetalert2";
+import { confirm, fire } from "@/lib/ui/swal";
 
 import type { PosAccount } from "@/lib/api/accounts";
 import { addCharge, updateAccount, deleteCharge, listCharges } from "@/lib/api/accounts";
@@ -294,14 +294,14 @@ if (next.length) {
       if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
       if (account.status !== "Abierta") throw new Error("Solo puedes modificar cuentas abiertas.");
 
-      const ok = await Swal.fire({
+      const ok = await confirm({
         title: "Aplicar cambios",
         text: `Esto actualizará las entradas de ${account.clientName} en esta cuenta.`,
         icon: "question",
-        showCancelButton: true,
         confirmButtonText: "Sí, aplicar",
         cancelButtonText: "Cancelar",
       });
+
       if (!ok.isConfirmed) return;
 
       const accountId = account.id;
@@ -364,7 +364,7 @@ if (next.length) {
         });
       }
 
-      await Swal.fire({
+      await fire({
         title: "Listo",
         text: "Entradas (y llaves) actualizadas en la cuenta.",
         icon: "success",
@@ -372,10 +372,11 @@ if (next.length) {
         showConfirmButton: false,
       });
 
+
       onOpenChange(false);
       await onDone();
     } catch (e: any) {
-      await Swal.fire({
+      await fire({
         title: "Error",
         text: e?.message || "No se pudo actualizar la cuenta.",
         icon: "error",
