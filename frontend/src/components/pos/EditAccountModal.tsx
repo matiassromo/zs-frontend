@@ -1,7 +1,7 @@
-// src/components/pos/AddEntriesModal.tsx
+// src/components/pos/EditAccountModal.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { confirm, fire } from "@/lib/ui/swal";
 
 import type { PosAccount } from "@/lib/api/accounts";
@@ -42,7 +42,6 @@ function keyLabel(k: keyof Counts) {
 }
 
 function conceptFor(k: keyof Counts) {
-  // ✅ conceptos sin (A)/(N)/(...) para que no vuelvan a grabarse
   switch (k) {
     case "A":
       return "Adulto";
@@ -58,21 +57,16 @@ function conceptFor(k: keyof Counts) {
 }
 
 const ENTRY_CONCEPTS = new Set<string>([
-  // ✅ nuevos (sin siglas)
   "Adulto",
   "Niño",
   "Tercera edad",
   "Discapacidad",
   "Acompañante",
-
-  // ✅ viejos con siglas por si quedaron en BD
   "Adulto (A)",
   "Niño (N)",
   "Tercera edad (TE)",
   "Discapacidad (D)",
   "Acompañante (AC)",
-
-  // ✅ variantes antiguas
   "Entrada adulto",
   "Entrada niño",
   "Entrada 3ra edad",
@@ -92,21 +86,15 @@ function keyFromOrdered(ordered: Key[], gender: KeyGender, number: number): Key 
   return ordered[idx] ?? null;
 }
 
-function normalizeStoredKeys(raw: any): SelectedKey[] {
-  const items = raw?.items ?? [];
-  if (!Array.isArray(items)) return [];
-
-  return items
-    .map((k: any) => ({
-      keyId: String(k.keyId ?? keyId(k.gender, k.number)),
-      gender: k.gender as KeyGender,
-      number: Number(k.number),
-      duration: (k.duration ?? raw?.duration ?? "1H") as any,
-    }))
-    .filter((k: any) => (k.gender === "H" || k.gender === "M") && Number.isFinite(k.number));
+// ✅ extrae el “tag” de cuenta desde notes (sirve para numérico o GUID)
+function extractAccountTagFromNote(note: string | null | undefined): string | null {
+  const s = String(note ?? "");
+  const m = s.match(/Cuenta\s*([0-9a-f-]+)/i) || s.match(/Cuenta\s*(\d+)/i);
+  if (!m?.[1]) return null;
+  return String(m[1]).slice(0, 8);
 }
 
-export default function AddEntriesModal({
+export default function EditAccountModal({
   open,
   onOpenChange,
   account,
@@ -116,12 +104,14 @@ export default function AddEntriesModal({
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  account: PosAccount; // ✅ NUNCA null aquí
+  account: PosAccount;
   posEnabled: boolean;
   posReason?: string | null;
   onDone: () => Promise<void> | void;
 }) {
   if (!open) return null;
+
+  const accountTag = useMemo(() => String(account.id).slice(0, 8), [account.id]);
 
   const initialCounts: Counts = useMemo(() => {
     const c = account.counts;
@@ -136,7 +126,6 @@ export default function AddEntriesModal({
 
   const [counts, setCounts] = useState<Counts>(initialCounts);
 
-  // Tarjeta 10 pases (solo consume; no des-consume)
   const [useCard, setUseCard] = useState(false);
   const [passCount, setPassCount] = useState(0);
 
@@ -144,7 +133,7 @@ export default function AddEntriesModal({
   const [keyGender, setKeyGender] = useState<KeyGender>("H");
   const [availableKeys, setAvailableKeys] = useState<number[]>([]);
   const [selectedKeys, setSelectedKeys] = useState<SelectedKey[]>([]);
-  const [initialKeys, setInitialKeys] = useState<SelectedKey[]>([]); // snapshot para delta
+  const [initialKeys, setInitialKeys] = useState<SelectedKey[]>([]);
 
   // reset cuando cambia la cuenta
   useEffect(() => {
@@ -153,17 +142,78 @@ export default function AddEntriesModal({
     setPassCount(0);
   }, [initialCounts]);
 
-  // init llaves desde account.keys
+  // ✅ REGLA: el modal SIEMPRE reconstruye llaves desde backend real (keys + notes),
+  // así se sincroniza después de liberar en /llaves.
+  const hydrateSelectedKeysFromBackend = useCallback(async () => {
+    const raw = await listKeys();
+    const ordered = sortedKeysByGuid(raw);
+
+    const live: SelectedKey[] = [];
+
+    ordered.forEach((k, idx) => {
+      if (k.available) return;
+
+      const tag = extractAccountTagFromNote(k.notes);
+      if (!tag || tag !== accountTag) return;
+
+      const g: KeyGender = idx < 16 ? "H" : "M";
+      const num = g === "H" ? idx + 1 : idx - 16 + 1;
+
+      live.push({
+        keyId: keyId(g, num),
+        gender: g,
+        number: num,
+        duration: "1H" as any,
+      });
+    });
+
+    // orden bonito
+    live.sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number);
+
+    setSelectedKeys(live);
+    setInitialKeys(live);
+    setKeyGender(live[0]?.gender ?? "H");
+  }, [accountTag]);
+
+  // al abrir modal -> hidratar llaves reales
   useEffect(() => {
-    const normalized = normalizeStoredKeys((account as any).keys);
-    setSelectedKeys(normalized);
-    setInitialKeys(normalized);
+    if (!open) return;
+    hydrateSelectedKeysFromBackend();
+  }, [open, hydrateSelectedKeysFromBackend]);
 
-    if (normalized[0]) setKeyGender(normalized[0].gender);
-    else setKeyGender("H");
-  }, [account.id, (account as any).keys]);
+  // ✅ escuchar cambios desde /llaves (misma pestaña y multi-tab)
+  useEffect(() => {
+    if (!open) return;
 
-  // cargar llaves disponibles por género (misma lógica CreateAccountModal)
+    const onKeysChanged = (ev: any) => {
+      const tag = String(ev?.detail?.accountId ?? "").slice(0, 8);
+      if (!tag || tag !== accountTag) return;
+      hydrateSelectedKeysFromBackend();
+    };
+
+    window.addEventListener("zs:keys-changed", onKeysChanged as any);
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel("zs:bus");
+      bc.onmessage = (msg: any) => {
+        const data = msg?.data;
+        if (data?.type !== "keys-changed") return;
+        const tag = String(data?.accountId ?? "").slice(0, 8);
+        if (!tag || tag !== accountTag) return;
+        hydrateSelectedKeysFromBackend();
+      };
+    } catch {}
+
+    return () => {
+      window.removeEventListener("zs:keys-changed", onKeysChanged as any);
+      try {
+        bc?.close();
+      } catch {}
+    };
+  }, [open, accountTag, hydrateSelectedKeysFromBackend]);
+
+  // cargar llaves disponibles por género (y NO esconder las que son “mías” aunque estén ocupadas)
   useEffect(() => {
     let alive = true;
 
@@ -172,17 +222,19 @@ export default function AddEntriesModal({
       const ordered = sortedKeysByGuid(raw);
 
       const free: number[] = [];
+
       ordered.forEach((k, idx) => {
         const g: KeyGender = idx < 16 ? "H" : "M";
         if (g !== keyGender) return;
 
         const num = g === "H" ? idx + 1 : idx - 16 + 1;
-        if (k.available) free.push(num);
+
+        const mine = !k.available && extractAccountTagFromNote(k.notes) === accountTag;
+
+        if (k.available || mine) free.push(num);
       });
 
-      const used = new Set(
-        selectedKeys.filter((k) => k.gender === keyGender).map((k) => k.number)
-      );
+      const used = new Set(selectedKeys.filter((k) => k.gender === keyGender).map((k) => k.number));
 
       if (!alive) return;
       setAvailableKeys(free.filter((n) => !used.has(n)).sort((a, b) => a - b));
@@ -191,7 +243,7 @@ export default function AddEntriesModal({
     return () => {
       alive = false;
     };
-  }, [keyGender, selectedKeys]);
+  }, [keyGender, selectedKeys, accountTag]);
 
   const totalPeople = useMemo(
     () => counts.A + counts.N + counts.TE + counts.D + counts.AC,
@@ -209,14 +261,6 @@ export default function AddEntriesModal({
     const added = next.filter(
       (n) => !prev.some((p) => p.gender === n.gender && p.number === n.number)
     );
-
-    if (!removed.length && !added.length) {
-      // igual actualiza keys en cuenta por si cambia formato
-      await updateAccount(accountId, {
-        keys: next.length ? { items: next.map((k) => ({ gender: k.gender, number: k.number })), duration: "1H" } : undefined,
-      } as any);
-      return;
-    }
 
     const raw = await listKeys();
     const ordered = sortedKeysByGuid(raw);
@@ -242,8 +286,8 @@ export default function AddEntriesModal({
       const k = keyFromOrdered(ordered, a.gender as KeyGender, Number(a.number));
       if (!k) continue;
 
-      // si justo alguien la ocupó, evita pisar
-      if (!k.available) {
+      // no pises si es de otra cuenta
+      if (!k.available && extractAccountTagFromNote(k.notes) !== accountId.slice(0, 8)) {
         throw new Error(`La llave ${a.number}${a.gender} ya no está disponible.`);
       }
 
@@ -257,35 +301,40 @@ export default function AddEntriesModal({
 
     // persistir bundle de llaves en la cuenta
     await updateAccount(accountId, {
-      keys: next.length ? { items: next.map((k) => ({ gender: k.gender, number: k.number })), duration: "1H" } : undefined,
+      keys: next.length
+        ? { items: next.map((k) => ({ gender: k.gender, number: k.number })), duration: "1H" }
+        : undefined,
     } as any);
 
-    // ✅ Sync cargo Key (si no hay llaves -> eliminar)
-const currentCharges = await listCharges(accountId);
+    // Sync cargo Key
+    const currentCharges = await listCharges(accountId);
+    for (const c of currentCharges) {
+      if (c.kind === "Key") await deleteCharge(accountId, c.id);
+    }
 
-// borra cargos Key previos
-for (const c of currentCharges) {
-  if (c.kind === "Key") await deleteCharge(accountId, c.id);
-}
+    if (next.length) {
+      const tag = next
+        .slice()
+        .sort((a, b) => String(a.gender).localeCompare(String(b.gender)) || a.number - b.number)
+        .map((k) => `${k.number}${k.gender}`)
+        .join(", ");
 
-// crea solo si hay llaves
-if (next.length) {
-  const tag = next
-    .slice()
-    .sort((a, b) => String(a.gender).localeCompare(String(b.gender)) || a.number - b.number)
-    .map((k) => `${k.number}${k.gender}`)
-    .join(", ");
+      await addCharge(accountId, {
+        kind: "Key",
+        concept: `Llaves ${tag} (1H)`,
+        qty: 1,
+        amount: 0,
+      });
+    }
 
-  await addCharge(accountId, {
-    kind: "Key",
-    concept: `Llaves ${tag} (1H)`,
-    qty: 1,
-    amount: 0,
-  });
-}
+    // avisar a UI (misma pestaña + multi-tab)
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("zs:keys-changed", { detail: { accountId: accountId.slice(0, 8) } }));
+      try {
+        new BroadcastChannel("zs:bus").postMessage({ type: "keys-changed", accountId: accountId.slice(0, 8) });
+      } catch {}
+    }
 
-
-    // actualizar snapshot para no recalcular mal en la misma sesión si reabres sin recargar
     setInitialKeys(next);
   }
 
@@ -306,13 +355,12 @@ if (next.length) {
 
       const accountId = account.id;
 
-      // 0) ✅ llaves (antes del éxito)
+      // 0) llaves
       await syncKeys(accountId);
 
-      // 1) Reemplazar cargos de entradas (Normal) por los nuevos totales
+      // 1) entradas: borra solo pendientes de conceptos de entrada
       const charges = await listCharges(accountId);
 
-      // ✅ NO borres pagados (evita desbalancear pagos/total)
       const toDelete = charges.filter(
         (c) =>
           c.kind === "Normal" &&
@@ -324,7 +372,7 @@ if (next.length) {
         await deleteCharge(accountId, c.id);
       }
 
-      // 2) Crear cargos de entradas según nuevos conteos
+      // 2) recrea entradas
       const keys: (keyof Counts)[] = ["A", "N", "TE", "D", "AC"];
       for (const k of keys) {
         const qty = clampInt(counts[k]);
@@ -338,24 +386,21 @@ if (next.length) {
         });
       }
 
-      // 3) Persistir counts/peopleCount en la cuenta (para Dashboard)
+      // 3) persist counts
       await updateAccount(accountId, {
         peopleCount: totalPeople,
         counts: { ...counts },
       });
 
-      // 4) Tarjeta 10 pases (solo consume)
+      // 4) tarjeta 10 pases
       if (useCard && passCount > 0) {
         const holder = String(account.clientName ?? "").trim();
         if (!holder) throw new Error("No se puede usar tarjeta de pases sin nombre del cliente.");
 
         const card = await findAccessCardByHolder(holder);
-        if (!card) {
-          await createAccessCardForHolder(holder, 10);
-        }
+        if (!card) await createAccessCardForHolder(holder, 10);
         await consumeAccessCardByHolder(holder, passCount);
 
-        // cargo informativo $0
         await addCharge(accountId, {
           kind: "Normal",
           concept: "Tarjeta 10 pases (uso)",
@@ -371,7 +416,6 @@ if (next.length) {
         timer: 1100,
         showConfirmButton: false,
       });
-
 
       onOpenChange(false);
       await onDone();
@@ -395,10 +439,7 @@ if (next.length) {
             </div>
           </div>
 
-          <button
-            className="rounded-lg px-3 py-1 text-sm hover:bg-neutral-100"
-            onClick={() => onOpenChange(false)}
-          >
+          <button className="rounded-lg px-3 py-1 text-sm hover:bg-neutral-100" onClick={() => onOpenChange(false)}>
             Cerrar
           </button>
         </div>
@@ -488,7 +529,7 @@ if (next.length) {
             )}
           </div>
 
-          {/* ✅ LLAVES (mismo diseño del CreateAccountModal) */}
+          {/* LLAVES */}
           <div className="rounded-2xl border border-neutral-200 p-4">
             <div className="grid lg:grid-cols-3 gap-4">
               <div>
@@ -520,12 +561,7 @@ if (next.length) {
                               ? prev.filter((k) => !(k.number === n && k.gender === keyGender))
                               : [
                                   ...prev,
-                                  {
-                                    keyId: keyId(keyGender, n),
-                                    number: n,
-                                    gender: keyGender,
-                                    duration: "1H" as any,
-                                  },
+                                  { keyId: keyId(keyGender, n), number: n, gender: keyGender, duration: "1H" as any },
                                 ]
                           )
                         }
@@ -541,9 +577,7 @@ if (next.length) {
                     );
                   })}
 
-                  {availableKeys.length === 0 && (
-                    <span className="text-sm text-neutral-500">No hay llaves libres</span>
-                  )}
+                  {availableKeys.length === 0 && <span className="text-sm text-neutral-500">No hay llaves libres</span>}
                 </div>
               </div>
             </div>
@@ -578,10 +612,7 @@ if (next.length) {
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t px-5 py-4">
-          <button
-            className="px-4 py-2 rounded-xl border border-neutral-200 hover:bg-neutral-50"
-            onClick={() => onOpenChange(false)}
-          >
+          <button className="px-4 py-2 rounded-xl border border-neutral-200 hover:bg-neutral-50" onClick={() => onOpenChange(false)}>
             Cancelar
           </button>
           <button

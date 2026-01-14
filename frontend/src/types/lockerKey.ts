@@ -8,5 +8,7 @@ export interface LockerKey {
   zone: LockerZone;                  // Hombres / Mujeres
   status: "disponible" | "ocupada";  // estado para la UI
   assignedTo: string | null;         // nombre del cliente
-  since: string | null;              // ISO de cuándo se asignó (si algún día lo tienes)
+  since: string | null;      
+  accountId?: string | null;
+        // ISO de cuándo se asignó (si algún día lo tienes)
 }

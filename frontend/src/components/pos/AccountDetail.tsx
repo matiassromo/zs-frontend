@@ -12,7 +12,6 @@ import {
   printAccountReceipt,
   addCharge,
   deleteCharge,
-  listCharges as listChargesApi,
   type AccountSummary,
   type Charge,
   type Payment,
@@ -20,11 +19,8 @@ import {
 } from "@/lib/api/accounts";
 
 import { listKeys } from "@/lib/apiv2/keys";
-
 import { confirm, fire } from "@/lib/ui/swal";
-
-import AddEntriesModal from "@/components/pos/EditAccountModal";
-
+import EditAccountModal from "@/components/pos/EditAccountModal";
 import { consumeAccessCardByHolder } from "@/lib/apiv2/accessCards";
 
 // ✅ POS lock / caja diaria
@@ -86,6 +82,19 @@ function keyConceptFromSummary(summary: AccountSummary | null): string | null {
   return `Llaves ${tag}`;
 }
 
+/* ----------------- LLAVES: derivar code estable desde listKeys() ----------------- */
+function buildKeyCodeMap(allKeys: any[]): Record<string, string> {
+  // mismo criterio que /llaves: sort por id y map a 1H..16H / 1M..16M
+  const ordered = [...allKeys].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  const map: Record<string, string> = {};
+  for (let index = 0; index < ordered.length; index++) {
+    const zone = index < 16 ? "H" : "M";
+    const idxInZone = zone === "H" ? index + 1 : index - 16 + 1;
+    map[String(ordered[index].id)] = `${idxInZone}${zone}`;
+  }
+  return map;
+}
+
 export default function AccountDetail({
   accountId,
   onChanged,
@@ -115,14 +124,8 @@ export default function AccountDetail({
   // ✅ guarda scroll al pagar
   const lastScrollYRef = useRef(0);
 
-  async function loadAll() {
-    setLoading(true);
-    const [s, ch, pm] = await Promise.all([getAccount(accountId), listCharges(accountId), listPayments(accountId)]);
-    setSummary(s);
-    setCharges(ch);
-    setPayments(pm);
-    setLoading(false);
-  }
+  // ✅ concepto de llaves “vivo” (desde backend keys), no desde summary.keys
+  const [liveKeyConcept, setLiveKeyConcept] = useState<string | null>(null);
 
   function refreshPosGateFromSummary(s: AccountSummary | null) {
     if (!s) return;
@@ -130,7 +133,6 @@ export default function AccountDetail({
     const cb = getCashboxByDate(dk);
     const locked = isLocked(dk);
 
-    // ✅ Regla: POS SOLO opera si hay caja ABIERTA y NO locked
     const ok = !!cb && cb.status === "Abierta" && !locked;
     setPosEnabled(ok);
 
@@ -140,6 +142,67 @@ export default function AccountDetail({
       if (locked) setPosReason(`Caja del día ${dk} cerrada. POS bloqueado.`);
       else if (!cb) setPosReason(`No hay caja abierta para el día ${dk}. Abre caja para operar POS.`);
       else setPosReason(`Caja del día ${dk} está ${cb.status}. Abre caja para operar POS.`);
+    }
+  }
+
+  async function refreshLiveKeys(): Promise<string | null> {
+    const all = await listKeys();
+    const codeMap = buildKeyCodeMap(all as any[]);
+
+    const used = (all as any[])
+      .filter((k) => !k.available)
+      .filter((k) => String(k.notes ?? "").includes(`Cuenta ${accountId}`));
+
+    const tags = used
+      .map((k) => codeMap[String(k.id)] ?? null)
+      .filter(Boolean) as string[];
+
+    const uniq = Array.from(new Set(tags)).sort((a, b) => a.localeCompare(b));
+
+    if (!uniq.length) {
+      setLiveKeyConcept(null);
+      return null;
+    }
+
+    const concept = `Llaves ${uniq.join(", ")}`;
+    setLiveKeyConcept(concept);
+    return concept;
+  }
+
+  async function cleanupKeyChargesIfNoKeys(chNow: Charge[]) {
+    // si no hay llaves ocupadas -> borra cargos Key pendientes (reales, no synth)
+    if (liveKeyConcept) return;
+
+    const toDelete = chNow.filter((c) => c.kind === "Key" && c.id !== "__key_synth__" && c.status !== "Pagado");
+    for (const c of toDelete) {
+      await deleteCharge(accountId, c.id);
+    }
+  }
+
+  async function loadAll() {
+    setLoading(true);
+
+    const [s, ch, pm] = await Promise.all([
+      getAccount(accountId),
+      listCharges(accountId),
+      listPayments(accountId),
+    ]);
+
+    setSummary(s);
+    setCharges(ch);
+    setPayments(pm);
+    setLoading(false);
+
+    // ✅ primero refresca llaves reales
+    await refreshLiveKeys();
+
+    // ✅ si ya no hay llaves, borra cargo Key del backend
+    // (usa el estado actualizado; micro-delay no hace falta)
+    if (!liveKeyConcept) {
+      await cleanupKeyChargesIfNoKeys(ch);
+      // recarga cargos si borraste algo
+      const ch2 = await listCharges(accountId);
+      setCharges(ch2);
     }
   }
 
@@ -153,7 +216,7 @@ export default function AccountDetail({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summary?.openedAt, summary?.status]);
 
-  // ✅ escuchar cambios desde Caja Diaria (abrir/cerrar) o pagos (POS)
+  // ✅ escuchar cambios desde Caja Diaria
   useEffect(() => {
     function onCashboxChanged() {
       refreshPosGateFromSummary(summary);
@@ -164,6 +227,41 @@ export default function AccountDetail({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summary, accountId]);
 
+  // ✅ escuchar cambios de llaves emitidos por /llaves
+  useEffect(() => {
+    async function onKeysChanged(e: any) {
+      const acc = e?.detail?.accountId;
+      if (!acc || String(acc) === String(accountId)) {
+        await refreshLiveKeys();
+        await loadAll();
+      }
+    }
+    window.addEventListener("zs:keys-changed", onKeysChanged as any);
+    return () => window.removeEventListener("zs:keys-changed", onKeysChanged as any);
+  }, [accountId]);
+
+  // ✅ opcional multi-tab
+  useEffect(() => {
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel("zs:bus");
+      bc.onmessage = async (evt) => {
+        const data = (evt as any)?.data;
+        if (data?.type !== "keys-changed") return;
+        const acc = data?.accountId;
+        if (!acc || String(acc) === String(accountId)) {
+          await refreshLiveKeys();
+          await loadAll();
+        }
+      };
+    } catch {}
+    return () => {
+      try {
+        bc?.close();
+      } catch {}
+    };
+  }, [accountId]);
+
   const saldoColor = useMemo(() => {
     if (!summary) return "";
     return summary.saldo > 0 ? "text-rose-600" : "text-emerald-600";
@@ -173,7 +271,7 @@ export default function AccountDetail({
     return charges.some((c) => {
       const isKey = c.kind === "Key";
       const isZero = c.total <= 0;
-      if (isKey || isZero) return false; // no bloquean cierre
+      if (isKey || isZero) return false;
       return c.status !== "Pagado";
     });
   }, [charges]);
@@ -246,7 +344,7 @@ export default function AccountDetail({
 
     // ✅ Validación: no cerrar si existen llaves aún ocupadas por esta cuenta
     const allKeys = await listKeys();
-    const stillBusy = allKeys.filter((k: any) => {
+    const stillBusy = (allKeys as any[]).filter((k) => {
       if (k.available) return false;
       const note = String(k.notes ?? "");
       return note.includes(`Cuenta ${accountId}`);
@@ -259,7 +357,6 @@ export default function AccountDetail({
         text: "Aún hay llaves asignadas a esta cuenta. Debes liberarlas/entregarlas primero.",
         confirmButtonText: "Entendido",
       });
-
       return;
     }
 
@@ -330,7 +427,6 @@ export default function AccountDetail({
       cancelButtonText: "Cancelar",
     });
 
-
     if (!ok.isConfirmed) return;
 
     await deleteCharge(accountId, c.id);
@@ -338,7 +434,7 @@ export default function AccountDetail({
     onChanged?.();
   }
 
-  // ✅ displayCharges: siempre muestra la última fila Key, y si no hay pero summary.keys sí -> inyecta
+  // ✅ displayCharges: muestra última fila Key real; si no hay, inyecta una synth SOLO si hay llaves vivas
   const displayCharges = useMemo(() => {
     const nonKey = charges.filter((c) => c.kind !== "Key");
 
@@ -348,8 +444,8 @@ export default function AccountDetail({
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
     const lastKey = keyCharges[0] ? [keyCharges[0]] : [];
+    const computedKeyConcept = liveKeyConcept; // ✅ aquí manda el estado real
 
-    const computedKeyConcept = keyConceptFromSummary(summary);
     const shouldInject = lastKey.length === 0 && !!computedKeyConcept;
 
     const injected: Charge[] = shouldInject
@@ -368,7 +464,7 @@ export default function AccountDetail({
       : [];
 
     return [...nonKey, ...lastKey, ...injected].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-  }, [charges, summary]);
+  }, [charges, summary?.openedAt, liveKeyConcept]);
 
   // ✅ ADAPTADOR para AddEntriesModal (PosAccount)
   const accountForEntries: PosAccount | null = useMemo(() => {
@@ -397,7 +493,6 @@ export default function AccountDetail({
   return (
     <div className="min-w-0 overflow-hidden">
       <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden">
-        {/* Header del panel */}
         <div className="px-4 py-3 border-b border-neutral-200">
           <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">Detalle de cuenta</div>
           <div className="text-sm font-semibold text-neutral-900">Cuenta #{summary.id}</div>
@@ -410,7 +505,6 @@ export default function AccountDetail({
         </div>
 
         <div className="p-4 grid gap-4 min-w-0">
-          {/* Info + acciones */}
           <div className="rounded-xl border border-neutral-200 bg-white p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div className="min-w-0">
@@ -452,7 +546,6 @@ export default function AccountDetail({
             </div>
           </div>
 
-          {/* Resumen */}
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="rounded-xl border border-neutral-200 bg-white p-4">
               <div className="text-xs font-medium text-neutral-500">Total cargos</div>
@@ -468,7 +561,6 @@ export default function AccountDetail({
             </div>
           </div>
 
-          {/* Acciones */}
           <div className="flex flex-wrap gap-2">
             {summary.status === "Abierta" && (
               <button
@@ -497,7 +589,6 @@ export default function AccountDetail({
             </button>
           </div>
 
-          {/* Cargos */}
           <div className="rounded-xl border border-neutral-200 bg-white overflow-hidden min-w-0">
             <div className="px-4 py-3 border-b border-neutral-200 font-semibold">Cargos</div>
             <div className="overflow-x-auto">
@@ -527,7 +618,7 @@ export default function AccountDetail({
 
                         <td className="py-3 px-3">
                           {c.kind === "Key"
-                            ? keyConceptFromSummary(summary) ?? c.concept.replace(/\s*\(\s*1H\s*\)\s*$/i, "")
+                            ? (liveKeyConcept ?? keyConceptFromSummary(summary) ?? c.concept.replace(/\s*\(\s*1H\s*\)\s*$/i, ""))
                             : c.concept}
                         </td>
 
@@ -601,8 +692,6 @@ export default function AccountDetail({
             </div>
           </div>
 
-
-          {/* Pagos */}
           <div className="rounded-xl border border-neutral-200 bg-white overflow-hidden min-w-0">
             <div className="px-4 py-3 border-b border-neutral-200 font-semibold">Pagos</div>
 
@@ -638,7 +727,6 @@ export default function AccountDetail({
         </div>
       </div>
 
-      {/* Modal pago (no llaves) */}
       {selectedCharge && selectedCharge.kind !== "Key" && (
         <PayChargeModal
           charge={selectedCharge}
@@ -647,7 +735,6 @@ export default function AccountDetail({
         />
       )}
 
-      {/* Modal agregar cargo */}
       {addChargeOpen && (
         <AddChargeModal
           onCancel={() => setAddChargeOpen(false)}
@@ -658,16 +745,15 @@ export default function AccountDetail({
         />
       )}
 
-      {/* ✅ Modal Agregar/Editar entradas (incluye llaves) */}
       {addEntriesOpen && accountForEntries && (
-        <AddEntriesModal
+        <EditAccountModal
           open={addEntriesOpen}
           onOpenChange={setAddEntriesOpen}
           account={accountForEntries}
           posEnabled={posEnabled}
           posReason={posReason}
           onDone={async () => {
-            await loadAll(); // ✅ refresca detail
+            await loadAll();
             onChanged?.();
           }}
         />

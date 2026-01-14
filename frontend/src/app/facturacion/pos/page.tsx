@@ -79,13 +79,6 @@ export default function PosPage() {
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-800 shadow-sm transition hover:border-blue-500/70 hover:text-blue-700"
-              onClick={() => load()}
-              type="button"
-            >
-              Recargar
-            </button>
 
             <button
               className="inline-flex items-center justify-center rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700"

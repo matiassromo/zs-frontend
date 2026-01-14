@@ -60,12 +60,19 @@ export default function LlavesPage() {
         const client = k.lastAssignedClient ?? null;
 
         const rawNote: string | null = k.notes ?? null;
+
+        // ✅ extrae Cuenta 017, etc.
+        const m = rawNote?.match(/Cuenta\s*(\d+)/i);
+        const accountId = m?.[1] ?? null;
+
+        // si quieres seguir mostrando “cliente” sin el prefijo, OK
         const cleanNote = rawNote
           ? rawNote
               .replace(/^Cuenta\s*\d+\s*-\s*/i, "")
               .replace(/^-\s*/i, "")
               .trim()
           : null;
+
 
         const assigned = client ? client : null;
 
@@ -112,6 +119,7 @@ export default function LlavesPage() {
           status: k.available ? "disponible" : "ocupada",
           assignedTo: assigned,
           since,
+          accountId,
         };
       });
 
@@ -146,8 +154,8 @@ export default function LlavesPage() {
   const libresM = mujeres.filter((k) => k.status === "disponible").length;
 
   async function doRelease(code: string) {
-    const k = keys.find((x) => x.code === code);
-    if (!k) return;
+  const k = keys.find((x) => x.code === code);
+  if (!k) return;
 
   await updateKey(k.id, {
     available: true,
@@ -156,10 +164,27 @@ export default function LlavesPage() {
     lastAssignedAt: null,
   });
 
+  // ✅ avisa al POS (misma pestaña / navegación)
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("zs:keys-changed", {
+        detail: { accountId: (k as any).accountId ?? null, code },
+      })
+    );
 
-
-    load();
+    // ✅ opcional: multi-tab
+    try {
+      new BroadcastChannel("zs:bus").postMessage({
+        type: "keys-changed",
+        accountId: (k as any).accountId ?? null,
+        code,
+      });
+    } catch {}
   }
+
+  load();
+}
+
 
   return (
     <div className="p-6 space-y-8">
