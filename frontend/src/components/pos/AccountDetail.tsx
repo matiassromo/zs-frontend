@@ -431,6 +431,14 @@ export default function AccountDetail({
               {summary.status === "Abierta" && (
                 <div className="flex flex-wrap gap-2 justify-start md:justify-end">
                   <button
+                    onClick={() => setAddEntriesOpen(true)}
+                    disabled={!posEnabled}
+                    className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-50 disabled:opacity-50"
+                  >
+                    + Editar Cuenta
+                  </button>
+
+                  <button
                     onClick={() => setAddChargeOpen(true)}
                     disabled={!posEnabled}
                     className="inline-flex items-center justify-center rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
@@ -591,18 +599,6 @@ export default function AccountDetail({
             </div>
           </div>
 
-          {/* Agregar/Editar entradas (sin AccountFormModal) */}
-          {summary.status === "Abierta" && (
-            <div className="flex justify-end">
-              <button
-                onClick={() => setAddEntriesOpen(true)}
-                disabled={!posEnabled}
-                className="inline-flex items-center justify-center rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
-              >
-                + Editar Cuenta
-              </button>
-            </div>
-          )}
 
           {/* Pagos */}
           <div className="rounded-xl border border-neutral-200 bg-white overflow-hidden min-w-0">

@@ -388,7 +388,7 @@ if (next.length) {
       <div className="w-full max-w-3xl rounded-2xl bg-white shadow-xl overflow-hidden">
         <div className="flex items-center justify-between border-b px-5 py-4">
           <div>
-            <div className="text-lg font-semibold">Agregar / editar entradas</div>
+            <div className="text-lg font-semibold">Editar cuenta</div>
             <div className="text-sm text-neutral-500">
               Cuenta: <span className="font-medium text-neutral-900">{account.clientName}</span>
             </div>
