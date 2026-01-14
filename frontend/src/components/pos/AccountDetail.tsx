@@ -11,7 +11,6 @@ import {
   closeAccount,
   printAccountReceipt,
   addCharge,
-  updateAccount,
   deleteCharge,
   listCharges as listChargesApi,
   type AccountSummary,
@@ -21,13 +20,13 @@ import {
 } from "@/lib/api/accounts";
 
 import { listKeys } from "@/lib/apiv2/keys";
+
 import Swal from "sweetalert2";
 import AddEntriesModal from "@/components/pos/AddEntriesModal";
 
 import { consumeAccessCardByHolder } from "@/lib/apiv2/accessCards";
 
-// ✅ modal unificado create/edit
-import AccountFormModal from "@/components/pos/AccountFormModal";
+// ✅ POS lock / caja diaria
 import { toDateKey, getCashboxByDate, addPosPaymentMove } from "@/lib/apiv2/cashbox";
 
 // ✅ bar
@@ -37,16 +36,6 @@ import type { BarProduct } from "@/types/barProduct";
 const PRICES_LOCAL = { A: 7, N: 4, TE: 5, D: 5, AC: 1, PASS: 55 };
 
 type PayMethod = "Efectivo" | "Transferencia";
-
-function getKeyIdByGenderNumber(orderedKeys: any[], gender: "H" | "M", num: number) {
-  const idx = gender === "H" ? num - 1 : 16 + (num - 1);
-  const k = orderedKeys[idx];
-  return k?.id ?? null;
-}
-
-function keySig(g: any, n: any) {
-  return `${String(g)}-${String(n)}`;
-}
 
 function norm(s: string) {
   return (s ?? "")
@@ -67,32 +56,33 @@ function emitCashboxChanged(dateKey: string) {
   window.dispatchEvent(new CustomEvent("zs:cashbox-changed", { detail: { dateKey } }));
 }
 
-/* ----------------- LLAVES: adaptar a lo que espera AccountFormModal ----------------- */
-/**
- * AccountFormModal (por tu error TS) espera keys como ARRAY de items, no bundle.
- * Entonces:
- * - Summary guarda keys como {items, duration}
- * - Modal espera [{gender, number, keyId?, duration?}, ...]
- */
-function keysArrayFromStoredKeys(raw: any): any[] {
+/* ----------------- LLAVES: helpers para display desde summary.keys ----------------- */
+function normalizeStoredKeys(raw: any): { gender: "H" | "M"; number: number; duration?: any }[] {
   if (!raw) return [];
-  if (Array.isArray(raw)) return raw; // ya viene como array
+  if (Array.isArray(raw)) return raw;
   if (raw && Array.isArray(raw.items)) {
     const dur = raw.duration ?? "1H";
-    return raw.items.map((k: any) => ({ ...k, duration: k.duration ?? dur }));
+    return raw.items.map((k: any) => ({ gender: k.gender, number: Number(k.number), duration: k.duration ?? dur }));
   }
   return [];
 }
 
-function bundleFromModalKeys(raw: any): { items: any[]; duration: "1H" | "8H" | "2M" } | undefined {
-  const arr = Array.isArray(raw) ? raw : [];
-  if (!arr.length) return undefined;
+function formatKeysFromBundle(raw: any): string {
+  const items = normalizeStoredKeys(raw);
+  if (!items.length) return "";
+  return items
+    .slice()
+    .sort((a, b) => String(a.gender).localeCompare(String(b.gender)) || a.number - b.number)
+    .map((k) => `${k.number}${k.gender}`)
+    .join(", ");
+}
 
-  const d0 = String(arr[0]?.duration ?? "1H");
-  const duration: "1H" | "8H" | "2M" = d0 === "8H" || d0 === "2M" ? (d0 as any) : "1H";
-
-  const items = arr.map((k: any) => ({ gender: k.gender, number: k.number }));
-  return { items, duration };
+function keyConceptFromSummary(summary: AccountSummary | null): string | null {
+  if (!summary) return null;
+  const bundle = (summary as any).keys;
+  const tag = formatKeysFromBundle(bundle);
+  if (!tag) return null;
+  return `Llaves ${tag}`;
 }
 
 export default function AccountDetail({
@@ -110,7 +100,6 @@ export default function AccountDetail({
   const [payChargeId, setPayChargeId] = useState<string | null>(null);
 
   // ✅ modales/acciones
-  const [editFormOpen, setEditFormOpen] = useState(false);
   const [addChargeOpen, setAddChargeOpen] = useState(false);
   const [addEntriesOpen, setAddEntriesOpen] = useState(false);
 
@@ -347,16 +336,37 @@ export default function AccountDetail({
     onChanged?.();
   }
 
+  // ✅ displayCharges: siempre muestra la última fila Key, y si no hay pero summary.keys sí -> inyecta
   const displayCharges = useMemo(() => {
     const nonKey = charges.filter((c) => c.kind !== "Key");
+
     const keyCharges = charges
       .filter((c) => c.kind === "Key")
       .slice()
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
     const lastKey = keyCharges[0] ? [keyCharges[0]] : [];
-    return [...nonKey, ...lastKey].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-  }, [charges]);
+
+    const computedKeyConcept = keyConceptFromSummary(summary);
+    const shouldInject = lastKey.length === 0 && !!computedKeyConcept;
+
+    const injected: Charge[] = shouldInject
+      ? ([
+          {
+            id: "__key_synth__",
+            kind: "Key",
+            concept: computedKeyConcept!,
+            qty: 1,
+            amount: 0,
+            total: 0,
+            status: "Pendiente",
+            createdAt: summary?.openedAt ?? new Date().toISOString(),
+          } as any,
+        ] as Charge[])
+      : [];
+
+    return [...nonKey, ...lastKey, ...injected].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }, [charges, summary]);
 
   // ✅ ADAPTADOR para AddEntriesModal (PosAccount)
   const accountForEntries: PosAccount | null = useMemo(() => {
@@ -420,13 +430,6 @@ export default function AccountDetail({
 
               {summary.status === "Abierta" && (
                 <div className="flex flex-wrap gap-2 justify-start md:justify-end">
-                  <button
-                    onClick={() => setEditFormOpen(true)}
-                    disabled={!posEnabled}
-                    className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50 disabled:opacity-50"
-                  >
-                    Editar cuenta
-                  </button>
                   <button
                     onClick={() => setAddChargeOpen(true)}
                     disabled={!posEnabled}
@@ -511,9 +514,13 @@ export default function AccountDetail({
                       <tr key={c.id} className="border-t border-neutral-200">
                         <td className="py-3 px-3 whitespace-nowrap">{new Date(c.createdAt).toLocaleString("es-EC")}</td>
                         <td className="py-3 px-3">{c.kind}</td>
+
                         <td className="py-3 px-3">
-                          {c.kind === "Key" ? c.concept.replace(/\s*\(\s*1H\s*\)\s*$/i, "") : c.concept}
+                          {c.kind === "Key"
+                            ? keyConceptFromSummary(summary) ?? c.concept.replace(/\s*\(\s*1H\s*\)\s*$/i, "")
+                            : c.concept}
                         </td>
+
                         <td className="py-3 px-3">{c.qty}</td>
 
                         <td className="py-3 px-3">
@@ -584,7 +591,7 @@ export default function AccountDetail({
             </div>
           </div>
 
-          {/* Agregar entradas (sin crear otra cuenta) */}
+          {/* Agregar/Editar entradas (sin AccountFormModal) */}
           {summary.status === "Abierta" && (
             <div className="flex justify-end">
               <button
@@ -592,7 +599,7 @@ export default function AccountDetail({
                 disabled={!posEnabled}
                 className="inline-flex items-center justify-center rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
               >
-                + Agregar entrada
+                + Editar Cuenta
               </button>
             </div>
           )}
@@ -642,95 +649,6 @@ export default function AccountDetail({
         />
       )}
 
-      {/* Modal editar cuenta */}
-      {editFormOpen && (
-        <AccountFormModal
-          mode="edit"
-          initial={{
-            clientId: summary.clientId,
-            clientName: summary.clientName ?? "",
-            requiresParking: (summary as any).requiresParking ?? false,
-            // ✅ FIX TS: modal espera ARRAY, no bundle
-            keys: keysArrayFromStoredKeys((summary as any).keys),
-          }}
-          onCancel={() => setEditFormOpen(false)}
-          onSubmit={async (payload: any) => {
-            if (!posEnabled) return;
-
-            // ✅ FIX TS: payload.keys viene como ARRAY del modal -> convertir a bundle del store
-            const keysBundle = bundleFromModalKeys(payload.keys);
-
-            // 1) Actualiza datos base de cuenta (incluye llaves)
-            await updateAccount(accountId, {
-              clientId: payload.clientId,
-              clientName: payload.clientName,
-              requiresParking: payload.requiresParking,
-              keys: keysBundle,
-            } as any);
-
-            // 2) ✅ Sync del cargo Key
-            try {
-              const currentCharges = await listChargesApi(accountId);
-              for (const c of currentCharges) {
-                if (c.kind === "Key") await deleteCharge(accountId, c.id);
-              }
-
-              const items = keysBundle?.items ?? [];
-              if (items.length) {
-                const tag = items
-                  .slice()
-                  .sort((a: any, b: any) => String(a.gender).localeCompare(String(b.gender)) || a.number - b.number)
-                  .map((k: any) => `${k.number}${k.gender}`)
-                  .join(", ");
-
-                await addCharge(accountId, {
-                  kind: "Key",
-                  concept: `Llaves ${tag} (${keysBundle?.duration ?? "1H"})`,
-                  qty: 1,
-                  amount: 0,
-                });
-              }
-            } catch (e) {
-              console.error("No se pudo sincronizar cargo Key:", e);
-            }
-
-            // 3) En EDIT: registra deltas como cargos/ajustes (tu lógica)
-            const addLines: Array<{ concept: string; qty: number; amount: number }> = [];
-            const refLines: Array<{ concept: string; qty: number; amount: number }> = [];
-
-            const add = payload.countsAdd ?? { A: 0, N: 0, TE: 0, D: 0, AC: 0 };
-            const refund = payload.countsRefund ?? { A: 0, N: 0, TE: 0, D: 0, AC: 0 };
-
-            if (add.A) addLines.push({ concept: "Entrada adulto", qty: add.A, amount: PRICES_LOCAL.A });
-            if (add.N) addLines.push({ concept: "Entrada niño", qty: add.N, amount: PRICES_LOCAL.N });
-            if (add.TE) addLines.push({ concept: "Entrada 3ra edad", qty: add.TE, amount: PRICES_LOCAL.TE });
-            if (add.D) addLines.push({ concept: "Entrada discapacidad", qty: add.D, amount: PRICES_LOCAL.D });
-            if (add.AC) addLines.push({ concept: "Acompañante", qty: add.AC, amount: PRICES_LOCAL.AC });
-
-            if (refund.A) refLines.push({ concept: "Devolución entrada adulto", qty: refund.A, amount: -PRICES_LOCAL.A });
-            if (refund.N) refLines.push({ concept: "Devolución entrada niño", qty: refund.N, amount: -PRICES_LOCAL.N });
-            if (refund.TE) refLines.push({ concept: "Devolución entrada 3ra edad", qty: refund.TE, amount: -PRICES_LOCAL.TE });
-            if (refund.D) refLines.push({ concept: "Devolución entrada discapacidad", qty: refund.D, amount: -PRICES_LOCAL.D });
-            if (refund.AC) refLines.push({ concept: "Devolución acompañante", qty: refund.AC, amount: -PRICES_LOCAL.AC });
-
-            for (const x of addLines) await addCharge(accountId, { kind: "Normal", concept: x.concept, qty: x.qty, amount: x.amount });
-            for (const x of refLines) await addCharge(accountId, { kind: "Normal", concept: x.concept, qty: x.qty, amount: x.amount });
-
-            if (payload.passOps?.shouldConsumePasses && (payload.passPeopleAdd ?? 0) > 0) {
-              await consumeAccessCardByHolder(payload.clientName, payload.passPeopleAdd);
-            }
-
-            if (payload.passOps?.shouldChargePassSale) {
-              await addCharge(accountId, { kind: "Pase", concept: "Tarjeta 10 pases", qty: 1, amount: PRICES_LOCAL.PASS });
-            }
-
-            setEditFormOpen(false);
-            await loadAll();
-            onChanged?.();
-          }}
-        />
-      )}
-
       {/* Modal agregar cargo */}
       {addChargeOpen && (
         <AddChargeModal
@@ -742,7 +660,7 @@ export default function AccountDetail({
         />
       )}
 
-      {/* ✅ Modal Agregar/Editar entradas (FIX: no null + pasa posEnabled/posReason) */}
+      {/* ✅ Modal Agregar/Editar entradas (incluye llaves) */}
       {addEntriesOpen && accountForEntries && (
         <AddEntriesModal
           open={addEntriesOpen}
@@ -751,7 +669,7 @@ export default function AccountDetail({
           posEnabled={posEnabled}
           posReason={posReason}
           onDone={async () => {
-            await loadAll();
+            await loadAll(); // ✅ refresca detail
             onChanged?.();
           }}
         />

@@ -295,6 +295,25 @@ export async function updateAccount(
   };
 
   s.accounts[idx] = next;
+    // ✅ Si llaves quedan vacías, borrar cargo Key del store
+  // ✅ Si keys fue tocado y queda vacío, borrar cargo Key del store
+  const keysTouched = Object.prototype.hasOwnProperty.call(input, "keys");
+  const incomingKeys = (input as any).keys;
+
+  const willHaveNoKeys =
+    !incomingKeys ||
+    !Array.isArray(incomingKeys.items) ||
+    incomingKeys.items.length === 0;
+
+  if (keysTouched && willHaveNoKeys) {
+    const list = s.chargesByAccount[accountId] ?? [];
+    s.chargesByAccount[accountId] = list.filter((c) => c.kind !== "Key");
+
+    // ✅ también limpia las llaves en la cuenta
+    (next as any).keys = undefined;
+  }
+
+
   save(s);
   return next;
 }
