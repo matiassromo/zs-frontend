@@ -12,6 +12,9 @@ export async function updateKey(id: string, input: KeyRequestDto): Promise<Key> 
     Available: input.available,
     Notes: input.notes ?? null,
     LastAssignedTo: input.lastAssignedTo ?? null,
+
+    // ✅ NUEVO
+    LastAssignedAt: input.lastAssignedAt ?? null,
   };
 
   const dto = await http<any>(`/api/Keys/${id}`, {
@@ -22,18 +25,31 @@ export async function updateKey(id: string, input: KeyRequestDto): Promise<Key> 
   return normalize(dto);
 }
 
+function ensureTz(iso: any): string | null {
+  const s = typeof iso === "string" ? iso : null;
+  if (!s) return null;
+
+  // si ya tiene Z o +hh:mm o -hh:mm, déjalo
+  if (/[zZ]$/.test(s) || /[+-]\d{2}:\d{2}$/.test(s)) return s;
+
+  // si no tiene timezone, asumimos UTC
+  return `${s}Z`;
+}
+
 function normalize(dto: any): Key {
+  const rawLastAssignedAt = dto.lastAssignedAt ?? dto.LastAssignedAt ?? null;
+
   return {
     id: dto.id ?? dto.Id,
     available: dto.available ?? dto.Available ?? false,
     notes: dto.notes ?? dto.Notes ?? null,
-
-    // guarda el guid si viene como string
     lastAssignedClient:
-      dto.lastAssignedClient ??
-      dto.LastAssignedClient ??
-      dto.lastAssignedTo ??
-      dto.LastAssignedTo ??
+      dto.lastAssignedClient?.name ??
+      dto.LastAssignedClient?.name ??
       null,
+
+    lastAssignedAt: ensureTz(rawLastAssignedAt), // ✅
   };
 }
+
+

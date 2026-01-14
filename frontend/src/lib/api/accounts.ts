@@ -2,6 +2,8 @@
 import { PosEntryType, SelectedKey } from "@/types/pos";
 import { releaseLockerKeys } from "@/lib/lockerKeysSync"; // <- NUEVO
 
+
+
 export type PosAccount = {
   id: string;
   status: "Abierta" | "Cerrada";
@@ -420,12 +422,12 @@ export async function deleteCharge(accountId: string, chargeId: string) {
   s.chargesByAccount[accountId] = list.filter((c) => c.id !== chargeId);
   save(s);
 
-  // ✅ re-sincroniza peopleCount/counts si borraste Normal
   if (target.kind === "Normal") {
     const inf = inferCountsFromCharges(s.chargesByAccount[accountId] ?? []);
     await updateAccount(accountId, { peopleCount: inf.peopleCount, counts: inf.counts });
   }
 }
+
 
 /* ------------------ llaves mutables en cuenta (local store) ------------------ */
 export async function setAccountKeys(

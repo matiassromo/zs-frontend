@@ -44,6 +44,9 @@ export default function LlavesPage() {
 
     try {
       const raw: Key[] = await listKeys();
+
+      // OJO: NO ordenes por id (GUID). Si puedes, ordena por keyCode.
+      // Si todavía no lo tienes en el type, deja esto como estaba.
       const ordered = [...raw].sort((a, b) => a.id.localeCompare(b.id));
 
       const sinceMap = readSinceMap();
@@ -54,13 +57,9 @@ export default function LlavesPage() {
         const indexInZone = zone === "Hombres" ? index + 1 : index - 16 + 1;
         const code = `${indexInZone}${zone === "Hombres" ? "H" : "M"}`;
 
-        const client =
-          (k as any).lastAssignedTo ??
-          (k as any).lastAssignedClient?.name ??
-          null;
+        const client = k.lastAssignedClient ?? null;
 
-
-        const rawNote: string | null = (k as any).notes ?? null;
+        const rawNote: string | null = k.notes ?? null;
         const cleanNote = rawNote
           ? rawNote
               .replace(/^Cuenta\s*\d+\s*-\s*/i, "")
@@ -68,56 +67,36 @@ export default function LlavesPage() {
               .trim()
           : null;
 
-        const assigned =
-          client
-            ? (cleanNote && cleanNote.toLowerCase() !== client.toLowerCase()
-                ? `${client}`
-                : `${client}`)
-            : null;
+        const assigned = client ? client : null;
 
-        // ✅ intentamos usar un timestamp del backend si existe
-        const sinceFromApi =
-          (k as any).lastAssignedAt ??
-          (k as any).assignedAt ??
-          (k as any).updatedAt ??
-          (k as any).modifiedAt ??
-          null;
+        const sinceFromApi = k.lastAssignedAt ?? null;
 
         let since: string | null = null;
 
         if (!k.available) {
-          // si viene del backend
+          // 1) si viene del backend
           if (typeof sinceFromApi === "string") {
-            since = sinceFromApi;
-          } else if (sinceFromApi) {
-            // por si viene como Date/number
             const d = new Date(sinceFromApi);
             since = isNaN(d.getTime()) ? null : d.toISOString();
           }
 
-          // si NO viene del backend, usamos localStorage (desde que la vimos asignada)
-          // si NO viene del backend, usamos localStorage, pero reiniciamos si cambió el asignado
-        if (!since) {
-          const fp = `${client ?? ""}|${cleanNote ?? ""}`; // huella del asignado actual
-          const stored = sinceMap[k.id]; // puede ser string viejo
+          // 2) fallback localStorage (reinicia si cambia asignado)
+          if (!since) {
+            const fp = `${assigned ?? ""}|${cleanNote ?? ""}`;
+            const storedSince = sinceMap[k.id] ?? null;
+            const fpKey = `__fp:${k.id}`;
+            const prevFp = (sinceMap as any)[fpKey] as string | undefined;
 
-          const storedSince = typeof stored === "string" ? stored : null;
-          const storedFpKey = `__fp:${k.id}`;
+            if (!storedSince || prevFp !== fp) {
+              sinceMap[k.id] = new Date().toISOString();
+              (sinceMap as any)[fpKey] = fp;
+              sinceMapChanged = true;
+            }
 
-          const prevFp = (sinceMap as any)[storedFpKey] as string | undefined;
-
-          // si nunca se guardó o cambió de persona/cuenta -> reinicia
-          if (!storedSince || prevFp !== fp) {
-            sinceMap[k.id] = new Date().toISOString();
-            (sinceMap as any)[storedFpKey] = fp;
-            sinceMapChanged = true;
+            since = sinceMap[k.id] ?? null;
           }
-
-          since = sinceMap[k.id];
-        }
-
         } else {
-          // si ya está libre, limpiamos el since guardado
+          // si está libre, limpia cache
           if (sinceMap[k.id]) {
             delete sinceMap[k.id];
             delete (sinceMap as any)[`__fp:${k.id}`];
@@ -132,20 +111,17 @@ export default function LlavesPage() {
           zone,
           status: k.available ? "disponible" : "ocupada",
           assignedTo: assigned,
-          since, // ✅ ahora sí
+          since,
         };
       });
 
       if (sinceMapChanged) writeSinceMap(sinceMap);
-
-      setKeys(lockerKeys);
-
-
       setKeys(lockerKeys);
     } finally {
       if (!silent) setLoading(false);
     }
   }
+
 
   useEffect(() => {
     load();
@@ -177,7 +153,9 @@ export default function LlavesPage() {
     available: true,
     lastAssignedTo: null,
     notes: null,
+    lastAssignedAt: null,
   });
+
 
 
     load();

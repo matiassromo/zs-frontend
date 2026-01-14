@@ -13,20 +13,22 @@ import {
   addCharge,
   updateAccount,
   deleteCharge,
+  listCharges as listChargesApi,
   type AccountSummary,
   type Charge,
   type Payment,
+  type PosAccount,
 } from "@/lib/api/accounts";
 
-import { listKeys, updateKey } from "@/lib/apiv2/keys";
+import { listKeys } from "@/lib/apiv2/keys";
 import Swal from "sweetalert2";
+import AddEntriesModal from "@/components/pos/AddEntriesModal";
 
 import { consumeAccessCardByHolder } from "@/lib/apiv2/accessCards";
 
 // ✅ modal unificado create/edit
 import AccountFormModal from "@/components/pos/AccountFormModal";
 import { toDateKey, getCashboxByDate, addPosPaymentMove } from "@/lib/apiv2/cashbox";
-
 
 // ✅ bar
 import { listBarProducts } from "@/lib/apiv2/barProducts";
@@ -45,7 +47,6 @@ function getKeyIdByGenderNumber(orderedKeys: any[], gender: "H" | "M", num: numb
 function keySig(g: any, n: any) {
   return `${String(g)}-${String(n)}`;
 }
-
 
 function norm(s: string) {
   return (s ?? "")
@@ -66,21 +67,32 @@ function emitCashboxChanged(dateKey: string) {
   window.dispatchEvent(new CustomEvent("zs:cashbox-changed", { detail: { dateKey } }));
 }
 
-/* ----------------- Normalización llaves para modal edit ----------------- */
-function normalizeKeysForForm(summaryAny: any): { gender: any; number: any }[] {
-  const raw = summaryAny?.keys;
-
-  // Formato nuevo: { items: [...], duration: ... }
+/* ----------------- LLAVES: adaptar a lo que espera AccountFormModal ----------------- */
+/**
+ * AccountFormModal (por tu error TS) espera keys como ARRAY de items, no bundle.
+ * Entonces:
+ * - Summary guarda keys como {items, duration}
+ * - Modal espera [{gender, number, keyId?, duration?}, ...]
+ */
+function keysArrayFromStoredKeys(raw: any): any[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw; // ya viene como array
   if (raw && Array.isArray(raw.items)) {
-    return raw.items.map((k: any) => ({ gender: k.gender, number: k.number }));
+    const dur = raw.duration ?? "1H";
+    return raw.items.map((k: any) => ({ ...k, duration: k.duration ?? dur }));
   }
-
-  // Formato viejo: [...]
-  if (Array.isArray(raw)) {
-    return raw.map((k: any) => ({ gender: k.gender, number: k.number }));
-  }
-
   return [];
+}
+
+function bundleFromModalKeys(raw: any): { items: any[]; duration: "1H" | "8H" | "2M" } | undefined {
+  const arr = Array.isArray(raw) ? raw : [];
+  if (!arr.length) return undefined;
+
+  const d0 = String(arr[0]?.duration ?? "1H");
+  const duration: "1H" | "8H" | "2M" = d0 === "8H" || d0 === "2M" ? (d0 as any) : "1H";
+
+  const items = arr.map((k: any) => ({ gender: k.gender, number: k.number }));
+  return { items, duration };
 }
 
 export default function AccountDetail({
@@ -100,6 +112,7 @@ export default function AccountDetail({
   // ✅ modales/acciones
   const [editFormOpen, setEditFormOpen] = useState(false);
   const [addChargeOpen, setAddChargeOpen] = useState(false);
+  const [addEntriesOpen, setAddEntriesOpen] = useState(false);
 
   // ✅ para evitar doble click / estado de acciones
   const [closing, setClosing] = useState(false);
@@ -114,11 +127,7 @@ export default function AccountDetail({
 
   async function loadAll() {
     setLoading(true);
-    const [s, ch, pm] = await Promise.all([
-      getAccount(accountId),
-      listCharges(accountId),
-      listPayments(accountId),
-    ]);
+    const [s, ch, pm] = await Promise.all([getAccount(accountId), listCharges(accountId), listPayments(accountId)]);
     setSummary(s);
     setCharges(ch);
     setPayments(pm);
@@ -299,35 +308,79 @@ export default function AccountDetail({
     if (input.qty <= 0) throw new Error("Cantidad inválida.");
     if (!Number.isFinite(input.amount)) throw new Error("Monto inválido.");
 
-    await addCharge(accountId, {
-      kind: "Normal",
-      concept,
-      qty: input.qty,
-      amount: input.amount,
+    await addCharge(accountId, { kind: "Normal", concept, qty: input.qty, amount: input.amount });
+    await loadAll();
+    onChanged?.();
+  }
+
+  async function handleDeleteCharge(c: Charge) {
+    if (!posEnabled) return;
+
+    if (summary?.status !== "Abierta") {
+      await Swal.fire({ icon: "info", title: "Cuenta cerrada", text: "No se puede eliminar en una cuenta cerrada." });
+      return;
+    }
+
+    if (c.kind === "Key") {
+      await Swal.fire({ icon: "info", title: "No permitido", text: "El cargo de llaves no se elimina desde aquí." });
+      return;
+    }
+
+    if (c.status === "Pagado") {
+      await Swal.fire({ icon: "warning", title: "No permitido", text: "No se puede eliminar un cargo pagado." });
+      return;
+    }
+
+    const ok = await Swal.fire({
+      icon: "warning",
+      title: "Eliminar cargo",
+      text: `Se eliminará: ${c.concept} (x${c.qty})`,
+      showCancelButton: true,
+      confirmButtonText: "Sí, eliminar",
+      cancelButtonText: "Cancelar",
     });
 
+    if (!ok.isConfirmed) return;
+
+    await deleteCharge(accountId, c.id);
     await loadAll();
     onChanged?.();
   }
 
   const displayCharges = useMemo(() => {
-  const nonKey = charges.filter((c) => c.kind !== "Key");
-  const keyCharges = charges
-    .filter((c) => c.kind === "Key")
-    .slice()
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    const nonKey = charges.filter((c) => c.kind !== "Key");
+    const keyCharges = charges
+      .filter((c) => c.kind === "Key")
+      .slice()
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
-  const lastKey = keyCharges[0] ? [keyCharges[0]] : [];
-  return [...nonKey, ...lastKey].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-}, [charges]);
+    const lastKey = keyCharges[0] ? [keyCharges[0]] : [];
+    return [...nonKey, ...lastKey].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }, [charges]);
+
+  // ✅ ADAPTADOR para AddEntriesModal (PosAccount)
+  const accountForEntries: PosAccount | null = useMemo(() => {
+    if (!summary) return null;
+    return {
+      id: summary.id,
+      status: summary.status,
+      openedAt: summary.openedAt,
+      closedAt: summary.closedAt ?? null,
+      clientId: summary.clientId,
+      clientName: summary.clientName ?? "",
+      gender: (summary.gender ?? "M") as any,
+      entryType: (summary.entryType ?? "normal") as any,
+      requiresParking: (summary as any).requiresParking ?? false,
+      keys: (summary as any).keys,
+      peopleCount: (summary as any).peopleCount ?? 0,
+      counts: (summary as any).counts ?? { A: 0, N: 0, TE: 0, D: 0, AC: 0 },
+    };
+  }, [summary]);
 
   if (loading) return <div className="mt-4 text-sm text-neutral-500">Cargando detalle…</div>;
   if (!summary) return null;
 
   const selectedCharge = payChargeId ? charges.find((c) => c.id === payChargeId) ?? null : null;
-
-  
-
 
   return (
     <div className="min-w-0 overflow-hidden">
@@ -486,23 +539,31 @@ export default function AccountDetail({
                         </td>
 
                         <td className="py-3 px-3 text-right">
-                          {summary.status === "Abierta" && c.status === "Pendiente" && !isKey ? (
-                            <button
-                              onClick={() => {
-                                if (c.total <= 0) return;
-                                setPayChargeId(c.id);
-                              }}
-                              disabled={!posEnabled || c.total <= 0}
-                              className={
-                                "inline-flex items-center justify-center rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-50 " +
-                                (c.total <= 0
-                                  ? "bg-neutral-300 cursor-not-allowed"
-                                  : "bg-emerald-600 hover:bg-emerald-700")
-                              }
-                              title={c.total <= 0 ? "No se puede pagar un cargo con total $0.00" : undefined}
-                            >
-                              Registrar pago
-                            </button>
+                          {summary.status === "Abierta" && c.status === "Pendiente" && !isKey && c.total > 0 ? (
+                            <div className="flex justify-end gap-2">
+                              <button
+                                onClick={() => {
+                                  if (c.total <= 0) return;
+                                  setPayChargeId(c.id);
+                                }}
+                                disabled={!posEnabled || c.total <= 0}
+                                className={
+                                  "inline-flex items-center justify-center rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-50 " +
+                                  (c.total <= 0 ? "bg-neutral-300 cursor-not-allowed" : "bg-emerald-600 hover:bg-emerald-700")
+                                }
+                                title={c.total <= 0 ? "No se puede pagar un cargo con total $0.00" : undefined}
+                              >
+                                Registrar pago
+                              </button>
+
+                              <button
+                                onClick={() => handleDeleteCharge(c)}
+                                disabled={!posEnabled}
+                                className="inline-flex items-center justify-center rounded-lg px-3 py-2 text-xs font-semibold border border-neutral-200 bg-white hover:bg-neutral-50 disabled:opacity-50"
+                              >
+                                Eliminar
+                              </button>
+                            </div>
                           ) : (
                             <span className="text-xs text-neutral-400">—</span>
                           )}
@@ -522,6 +583,19 @@ export default function AccountDetail({
               </table>
             </div>
           </div>
+
+          {/* Agregar entradas (sin crear otra cuenta) */}
+          {summary.status === "Abierta" && (
+            <div className="flex justify-end">
+              <button
+                onClick={() => setAddEntriesOpen(true)}
+                disabled={!posEnabled}
+                className="inline-flex items-center justify-center rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+              >
+                + Agregar entrada
+              </button>
+            </div>
+          )}
 
           {/* Pagos */}
           <div className="rounded-xl border border-neutral-200 bg-white overflow-hidden min-w-0">
@@ -576,45 +650,42 @@ export default function AccountDetail({
             clientId: summary.clientId,
             clientName: summary.clientName ?? "",
             requiresParking: (summary as any).requiresParking ?? false,
-            // ✅ FIX: keys puede venir como {items,...} o como []
-            keys: normalizeKeysForForm(summary as any),
+            // ✅ FIX TS: modal espera ARRAY, no bundle
+            keys: keysArrayFromStoredKeys((summary as any).keys),
           }}
           onCancel={() => setEditFormOpen(false)}
-          onSubmit={async (payload) => {
+          onSubmit={async (payload: any) => {
             if (!posEnabled) return;
+
+            // ✅ FIX TS: payload.keys viene como ARRAY del modal -> convertir a bundle del store
+            const keysBundle = bundleFromModalKeys(payload.keys);
 
             // 1) Actualiza datos base de cuenta (incluye llaves)
             await updateAccount(accountId, {
               clientId: payload.clientId,
               clientName: payload.clientName,
               requiresParking: payload.requiresParking,
-              keys: payload.keys, // ✅ ahora sí
+              keys: keysBundle,
             } as any);
 
-            // 2) ✅ Aplicar cambios de llaves al backend de llaves (para que /llaves lo vea)
-            // 1.5) ✅ Sync del cargo Key (para que “Cargos” se actualice)
+            // 2) ✅ Sync del cargo Key
             try {
-              const currentCharges = await listCharges(accountId);
-
-              // borra todos los cargos Key previos (deja solo el último si prefieres, aquí los borramos todos)
+              const currentCharges = await listChargesApi(accountId);
               for (const c of currentCharges) {
-                if (c.kind === "Key") {
-                  await deleteCharge(accountId, c.id);
-                }
+                if (c.kind === "Key") await deleteCharge(accountId, c.id);
               }
 
-              // crea el Key nuevo si hay llaves
-              const items = payload.keys?.items ?? [];
+              const items = keysBundle?.items ?? [];
               if (items.length) {
                 const tag = items
                   .slice()
-                  .sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number)
-                  .map((k) => `${k.number}${k.gender}`)
+                  .sort((a: any, b: any) => String(a.gender).localeCompare(String(b.gender)) || a.number - b.number)
+                  .map((k: any) => `${k.number}${k.gender}`)
                   .join(", ");
 
                 await addCharge(accountId, {
                   kind: "Key",
-                  concept: `Llaves ${tag} (${payload.keys.duration})`,
+                  concept: `Llaves ${tag} (${keysBundle?.duration ?? "1H"})`,
                   qty: 1,
                   amount: 0,
                 });
@@ -623,13 +694,12 @@ export default function AccountDetail({
               console.error("No se pudo sincronizar cargo Key:", e);
             }
 
-
             // 3) En EDIT: registra deltas como cargos/ajustes (tu lógica)
             const addLines: Array<{ concept: string; qty: number; amount: number }> = [];
             const refLines: Array<{ concept: string; qty: number; amount: number }> = [];
 
-            const add = payload.countsAdd;
-            const refund = payload.countsRefund;
+            const add = payload.countsAdd ?? { A: 0, N: 0, TE: 0, D: 0, AC: 0 };
+            const refund = payload.countsRefund ?? { A: 0, N: 0, TE: 0, D: 0, AC: 0 };
 
             if (add.A) addLines.push({ concept: "Entrada adulto", qty: add.A, amount: PRICES_LOCAL.A });
             if (add.N) addLines.push({ concept: "Entrada niño", qty: add.N, amount: PRICES_LOCAL.N });
@@ -643,18 +713,14 @@ export default function AccountDetail({
             if (refund.D) refLines.push({ concept: "Devolución entrada discapacidad", qty: refund.D, amount: -PRICES_LOCAL.D });
             if (refund.AC) refLines.push({ concept: "Devolución acompañante", qty: refund.AC, amount: -PRICES_LOCAL.AC });
 
-            for (const x of addLines) {
-              await addCharge(accountId, { kind: "Normal", concept: x.concept, qty: x.qty, amount: x.amount });
-            }
-            for (const x of refLines) {
-              await addCharge(accountId, { kind: "Normal", concept: x.concept, qty: x.qty, amount: x.amount });
-            }
+            for (const x of addLines) await addCharge(accountId, { kind: "Normal", concept: x.concept, qty: x.qty, amount: x.amount });
+            for (const x of refLines) await addCharge(accountId, { kind: "Normal", concept: x.concept, qty: x.qty, amount: x.amount });
 
-            if (payload.passOps.shouldConsumePasses && payload.passPeopleAdd > 0) {
+            if (payload.passOps?.shouldConsumePasses && (payload.passPeopleAdd ?? 0) > 0) {
               await consumeAccessCardByHolder(payload.clientName, payload.passPeopleAdd);
             }
 
-            if (payload.passOps.shouldChargePassSale) {
+            if (payload.passOps?.shouldChargePassSale) {
               await addCharge(accountId, { kind: "Pase", concept: "Tarjeta 10 pases", qty: 1, amount: PRICES_LOCAL.PASS });
             }
 
@@ -662,7 +728,6 @@ export default function AccountDetail({
             await loadAll();
             onChanged?.();
           }}
-
         />
       )}
 
@@ -673,6 +738,21 @@ export default function AccountDetail({
           onAdd={async (payload) => {
             await handleAddExtraCharge(payload);
             setAddChargeOpen(false);
+          }}
+        />
+      )}
+
+      {/* ✅ Modal Agregar/Editar entradas (FIX: no null + pasa posEnabled/posReason) */}
+      {addEntriesOpen && accountForEntries && (
+        <AddEntriesModal
+          open={addEntriesOpen}
+          onOpenChange={setAddEntriesOpen}
+          account={accountForEntries}
+          posEnabled={posEnabled}
+          posReason={posReason}
+          onDone={async () => {
+            await loadAll();
+            onChanged?.();
           }}
         />
       )}
@@ -821,9 +901,7 @@ function AddChargeModal({
               onClick={() => setTab("bar")}
               className={
                 "px-3 py-2 rounded-full border text-sm font-semibold " +
-                (tab === "bar"
-                  ? "bg-neutral-900 text-white border-neutral-900"
-                  : "border-neutral-200 hover:bg-neutral-50")
+                (tab === "bar" ? "bg-neutral-900 text-white border-neutral-900" : "border-neutral-200 hover:bg-neutral-50")
               }
             >
               Bar

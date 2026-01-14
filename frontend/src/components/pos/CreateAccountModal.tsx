@@ -15,11 +15,6 @@ import type { Key } from "@/types/key";
 import { createParking } from "@/lib/apiv2/parkings";
 import type { ParkingRequestDto } from "@/types/parking";
 
-// 🔽 Bar
-import type { BarProduct } from "@/types/barProduct";
-import { listBarProducts } from "@/lib/apiv2/barProducts";
-import { createBarOrder, createBarOrderDetail } from "@/lib/apiv2/barOrders";
-
 // ✅ Tarjetas 10 pases (módulo real)
 import {
   findAccessCardByHolder,
@@ -99,24 +94,20 @@ async function reserveLockerKeys(
 
   if (!toUpdate.length) return;
 
+  const nowIso = new Date().toISOString();
+
   await Promise.all(
     toUpdate.map(({ key }) =>
       updateKey(key.id, {
         available: false,
         lastAssignedTo: clientId,
         notes: note,
+        lastAssignedAt: nowIso, // 👈 CLAVE
       })
     )
   );
-}
 
-/* --------- Tipo auxiliar para bar en el modal ---------- */
-type BarItem = {
-  productId: string;
-  name: string;
-  unitPrice: number;
-  qty: number;
-};
+}
 
 /* --------- Tipo auxiliar tarjeta 10 pases ---------- */
 type AccessCardState = {
@@ -179,13 +170,6 @@ export default function CreateAccountModal({
 
   const [requiresParking, setRequiresParking] = useState(false);
   const [creating, setCreating] = useState(false);
-
-  const [useBarOrder, setUseBarOrder] = useState(false);
-  const [barProducts, setBarProducts] = useState<BarProduct[]>([]);
-  const [loadingBarProducts, setLoadingBarProducts] = useState(false);
-  const [selectedBarProductId, setSelectedBarProductId] = useState("");
-  const [barQty, setBarQty] = useState(1);
-  const [barItems, setBarItems] = useState<BarItem[]>([]);
 
   useEffect(() => {
     let alive = true;
@@ -252,21 +236,6 @@ export default function CreateAccountModal({
     };
   }, [keyGender, selectedHash]);
 
-  useEffect(() => {
-    if (!useBarOrder) return;
-    (async () => {
-      setLoadingBarProducts(true);
-      try {
-        const data = await listBarProducts();
-        setBarProducts(data);
-        if (data.length && !selectedBarProductId)
-          setSelectedBarProductId(data[0].id);
-      } finally {
-        setLoadingBarProducts(false);
-      }
-    })();
-  }, [useBarOrder, selectedBarProductId]);
-
   const entriesSubtotal = useMemo(() => {
     return +(
       counts.A * PRICES.A +
@@ -294,21 +263,9 @@ export default function CreateAccountModal({
   const keysSubtotal = 0;
   const parkingSubtotal = 0;
 
-  const barSubtotal = useMemo(
-    () => barItems.reduce((sum, item) => sum + item.unitPrice * item.qty, 0),
-    [barItems]
-  );
-
   const total = useMemo(
-    () =>
-      +(
-        entriesSubtotal +
-        passSale +
-        keysSubtotal +
-        parkingSubtotal +
-        barSubtotal
-      ).toFixed(2),
-    [entriesSubtotal, passSale, keysSubtotal, parkingSubtotal, barSubtotal]
+    () => +(entriesSubtotal + passSale + keysSubtotal + parkingSubtotal).toFixed(2),
+    [entriesSubtotal, passSale, keysSubtotal, parkingSubtotal]
   );
 
   function setCount(field: keyof typeof counts, v: number) {
@@ -482,28 +439,6 @@ export default function CreateAccountModal({
         createPassIfMissing: false,
       });
 
-      // const addEntryCharge = async (
-      //   concept: string,
-      //   qty: number,
-      //   unit: number
-      // ) => {
-      //   if (qty <= 0) return;
-      //   await addCharge(account.id, {
-      //     kind: "Normal",
-      //     concept,
-      //     qty,
-      //     amount: unit,
-      //   });
-      // };
-
-      // await Promise.all([
-      //   addEntryCharge("Entrada adulto", counts.A, PRICES.A),
-      //   addEntryCharge("Entrada niño", counts.N, PRICES.N),
-      //   addEntryCharge("Entrada 3ra edad", counts.TE, PRICES.TE),
-      //   addEntryCharge("Entrada discapacidad", counts.D, PRICES.D),
-      //   addEntryCharge("Entrada acompañante", counts.AC, PRICES.AC),
-      // ]);
-
       if (usePassCard && passPeople > 0 && willChargePassSale) {
         await addCharge(account.id, {
           kind: "Normal",
@@ -540,31 +475,6 @@ export default function CreateAccountModal({
           parkingExitTime: null,
         };
         await createParking(parkingInput);
-      }
-
-      if (useBarOrder && barItems.length > 0) {
-        const order = await createBarOrder({});
-
-        await Promise.all(
-          barItems.map((item) =>
-            createBarOrderDetail(order.id, {
-              barProductId: item.productId,
-              unitPrice: item.unitPrice,
-              qty: item.qty,
-            })
-          )
-        );
-
-        await Promise.all(
-          barItems.map((item) =>
-            addCharge(account.id, {
-              kind: "Normal",
-              concept: `${item.name}`,
-              qty: item.qty,
-              amount: item.unitPrice,
-            })
-          )
-        );
       }
 
       onCreated();
@@ -887,153 +797,6 @@ export default function CreateAccountModal({
                 Requiere parqueadero (0.50 la hora o fracción)
               </label>
             </div>
-          </div>
-
-          <div className="mt-5 rounded-2xl border border-neutral-200 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="text-sm font-medium">Consumo de bar inicial</div>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={useBarOrder}
-                  onChange={(e) => setUseBarOrder(e.target.checked)}
-                />
-                <span>Agregar productos de bar</span>
-              </label>
-            </div>
-
-            {useBarOrder && (
-              <div className="mt-4 space-y-3">
-                {loadingBarProducts ? (
-                  <p className="text-sm text-neutral-500">
-                    Cargando productos de bar...
-                  </p>
-                ) : barProducts.length === 0 ? (
-                  <p className="text-sm text-neutral-500">
-                    No hay productos de bar configurados.
-                  </p>
-                ) : (
-                  <form
-                    className="grid sm:grid-cols-3 gap-3 items-end"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      const p = barProducts.find(
-                        (x) => x.id === selectedBarProductId
-                      );
-                      if (!p || barQty <= 0) return;
-                      setBarItems((prev) => [
-                        ...prev,
-                        {
-                          productId: p.id,
-                          name: p.name,
-                          unitPrice: p.unitPrice,
-                          qty: barQty,
-                        },
-                      ]);
-                      setBarQty(1);
-                    }}
-                  >
-                    <div className="sm:col-span-2">
-                      <div className="text-sm font-medium">Producto</div>
-                      <select
-                        className="border border-neutral-200 rounded-xl px-3 py-2 w-full mt-2 text-sm"
-                        value={selectedBarProductId}
-                        onChange={(e) => setSelectedBarProductId(e.target.value)}
-                      >
-                        <option value="">Selecciona un producto</option>
-                        {barProducts.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} (${p.unitPrice.toFixed(2)})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <div className="text-sm font-medium">Cantidad</div>
-                      <input
-                        type="number"
-                        min={1}
-                        className="border border-neutral-200 rounded-xl px-3 py-2 w-full mt-2 text-sm"
-                        value={barQty}
-                        onChange={(e) =>
-                          setBarQty(
-                            Math.max(1, parseInt(e.target.value || "1", 10))
-                          )
-                        }
-                      />
-                    </div>
-                    <div className="sm:col-span-3 flex justify-end">
-                      <button
-                        type="submit"
-                        className="px-4 py-2 rounded-full bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-60"
-                        disabled={!selectedBarProductId}
-                      >
-                        Agregar a pedido
-                      </button>
-                    </div>
-                  </form>
-                )}
-
-                {barItems.length > 0 && (
-                  <div className="border border-neutral-200 rounded-xl overflow-hidden">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm min-w-[560px]">
-                        <thead className="bg-neutral-50">
-                          <tr>
-                            <th className="text-left px-3 py-2">Producto</th>
-                            <th className="text-right px-3 py-2">Cant.</th>
-                            <th className="text-right px-3 py-2">P. Unit.</th>
-                            <th className="text-right px-3 py-2">Subtotal</th>
-                            <th className="px-3 py-2"></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {barItems.map((i, idx) => (
-                            <tr key={idx} className="border-t border-neutral-200">
-                              <td className="px-3 py-2">{i.name}</td>
-                              <td className="px-3 py-2 text-right">{i.qty}</td>
-                              <td className="px-3 py-2 text-right">
-                                ${i.unitPrice.toFixed(2)}
-                              </td>
-                              <td className="px-3 py-2 text-right">
-                                {(i.unitPrice * i.qty).toFixed(2)}
-                              </td>
-                              <td className="px-3 py-2 text-right">
-                                <button
-                                  type="button"
-                                  className="text-xs font-semibold text-rose-600"
-                                  onClick={() =>
-                                    setBarItems((prev) =>
-                                      prev.filter((_, iIdx) => iIdx !== idx)
-                                    )
-                                  }
-                                >
-                                  Quitar
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                        <tfoot className="bg-neutral-50">
-                          <tr>
-                            <td
-                              className="px-3 py-2 font-semibold text-right"
-                              colSpan={3}
-                            >
-                              Total bar
-                            </td>
-                            <td className="px-3 py-2 font-semibold text-right">
-                              ${barSubtotal.toFixed(2)}
-                            </td>
-                            <td />
-                          </tr>
-                        </tfoot>
-                      </table>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
 
           <div className="grid md:grid-cols-4 gap-3 mt-5">
