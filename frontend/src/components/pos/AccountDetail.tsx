@@ -170,6 +170,9 @@ export default function AccountDetail({
   }
 
   async function cleanupKeyChargesIfNoKeys(chNow: Charge[]) {
+    // ✅ NO modificar cargos si la cuenta no está abierta (deleteCharge lo bloquea)
+    if (summary?.status !== "Abierta") return;
+
     // si no hay llaves ocupadas -> borra cargos Key pendientes (reales, no synth)
     if (liveKeyConcept) return;
 
@@ -179,7 +182,8 @@ export default function AccountDetail({
     }
   }
 
-  async function loadAll() {
+
+  async function loadAll(live?: string | null) {
     setLoading(true);
 
     const [s, ch, pm] = await Promise.all([
@@ -193,14 +197,12 @@ export default function AccountDetail({
     setPayments(pm);
     setLoading(false);
 
-    // ✅ primero refresca llaves reales
-    await refreshLiveKeys();
+    // ✅ si no me pasan live, lo calculo aquí
+    const liveNow = typeof live === "string" || live === null ? live : await refreshLiveKeys();
 
-    // ✅ si ya no hay llaves, borra cargo Key del backend
-    // (usa el estado actualizado; micro-delay no hace falta)
-    if (!liveKeyConcept) {
+    // ✅ si ya no hay llaves, borra cargo Key del backend (solo si cuenta abierta)
+    if (s.status === "Abierta" && !liveNow) {
       await cleanupKeyChargesIfNoKeys(ch);
-      // recarga cargos si borraste algo
       const ch2 = await listCharges(accountId);
       setCharges(ch2);
     }
