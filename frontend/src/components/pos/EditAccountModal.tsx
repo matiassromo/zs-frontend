@@ -1,4 +1,3 @@
-// src/components/pos/EditAccountModal.tsx
 "use client";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
@@ -11,6 +10,7 @@ import {
   findAccessCardByHolder,
   createAccessCardForHolder,
   consumeAccessCardByHolder,
+  updateAccessCard,
 } from "@/lib/apiv2/accessCards";
 
 import { listKeys, updateKey } from "@/lib/apiv2/keys";
@@ -20,6 +20,7 @@ import type { SelectedKey, KeyGender } from "@/types/pos";
 type Counts = { A: number; N: number; TE: number; D: number; AC: number };
 
 const PRICES = { A: 7, N: 4, TE: 5, D: 5, AC: 1 } as const;
+const PASS_PRICE = 55;
 
 function clampInt(n: any) {
   const v = Number.isFinite(Number(n)) ? Number(n) : 0;
@@ -92,6 +93,13 @@ function extractAccountTagFromNote(note: string | null | undefined): string | nu
   const m = s.match(/Cuenta\s*([0-9a-f-]+)/i) || s.match(/Cuenta\s*(\d+)/i);
   if (!m?.[1]) return null;
   return String(m[1]).slice(0, 8);
+}
+
+function remainingFromFound(found: { card: any; remaining?: any } | null | undefined): number {
+  const uses = Number(found?.card?.uses);
+  if (Number.isFinite(uses)) return uses;
+  const fallback = Number(found?.remaining);
+  return Number.isFinite(fallback) ? fallback : 0;
 }
 
 export default function EditAccountModal({
@@ -167,7 +175,6 @@ export default function EditAccountModal({
       });
     });
 
-    // orden bonito
     live.sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number);
 
     setSelectedKeys(live);
@@ -175,13 +182,11 @@ export default function EditAccountModal({
     setKeyGender(live[0]?.gender ?? "H");
   }, [accountTag]);
 
-  // al abrir modal -> hidratar llaves reales
   useEffect(() => {
     if (!open) return;
     hydrateSelectedKeysFromBackend();
   }, [open, hydrateSelectedKeysFromBackend]);
 
-  // ✅ escuchar cambios desde /llaves (misma pestaña y multi-tab)
   useEffect(() => {
     if (!open) return;
 
@@ -213,7 +218,6 @@ export default function EditAccountModal({
     };
   }, [open, accountTag, hydrateSelectedKeysFromBackend]);
 
-  // cargar llaves disponibles por género (y NO esconder las que son “mías” aunque estén ocupadas)
   useEffect(() => {
     let alive = true;
 
@@ -245,27 +249,18 @@ export default function EditAccountModal({
     };
   }, [keyGender, selectedKeys, accountTag]);
 
-  const totalPeople = useMemo(
-    () => counts.A + counts.N + counts.TE + counts.D + counts.AC,
-    [counts]
-  );
+  const totalPeople = useMemo(() => counts.A + counts.N + counts.TE + counts.D + counts.AC, [counts]);
 
   async function syncKeys(accountId: string) {
     const prev = initialKeys;
     const next = selectedKeys;
 
-    const removed = prev.filter(
-      (p) => !next.some((n) => n.gender === p.gender && n.number === p.number)
-    );
-
-    const added = next.filter(
-      (n) => !prev.some((p) => p.gender === n.gender && p.number === n.number)
-    );
+    const removed = prev.filter((p) => !next.some((n) => n.gender === p.gender && n.number === p.number));
+    const added = next.filter((n) => !prev.some((p) => p.gender === n.gender && p.number === n.number));
 
     const raw = await listKeys();
     const ordered = sortedKeysByGuid(raw);
 
-    // liberar
     for (const r of removed) {
       const k = keyFromOrdered(ordered, r.gender as KeyGender, Number(r.number));
       if (!k) continue;
@@ -278,7 +273,6 @@ export default function EditAccountModal({
       });
     }
 
-    // asignar
     const nowIso = new Date().toISOString();
     const note = `Cuenta ${accountId.slice(0, 8)} - ${String(account.clientName ?? "").trim()}`;
 
@@ -286,7 +280,6 @@ export default function EditAccountModal({
       const k = keyFromOrdered(ordered, a.gender as KeyGender, Number(a.number));
       if (!k) continue;
 
-      // no pises si es de otra cuenta
       if (!k.available && extractAccountTagFromNote(k.notes) !== accountId.slice(0, 8)) {
         throw new Error(`La llave ${a.number}${a.gender} ya no está disponible.`);
       }
@@ -299,14 +292,10 @@ export default function EditAccountModal({
       });
     }
 
-    // persistir bundle de llaves en la cuenta
     await updateAccount(accountId, {
-      keys: next.length
-        ? { items: next.map((k) => ({ gender: k.gender, number: k.number })), duration: "1H" }
-        : undefined,
+      keys: next.length ? { items: next.map((k) => ({ gender: k.gender, number: k.number })), duration: "1H" } : undefined,
     } as any);
 
-    // Sync cargo Key
     const currentCharges = await listCharges(accountId);
     for (const c of currentCharges) {
       if (c.kind === "Key") await deleteCharge(accountId, c.id);
@@ -327,7 +316,6 @@ export default function EditAccountModal({
       });
     }
 
-    // avisar a UI (misma pestaña + multi-tab)
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("zs:keys-changed", { detail: { accountId: accountId.slice(0, 8) } }));
       try {
@@ -362,10 +350,7 @@ export default function EditAccountModal({
       const charges = await listCharges(accountId);
 
       const toDelete = charges.filter(
-        (c) =>
-          c.kind === "Normal" &&
-          c.status !== "Pagado" &&
-          ENTRY_CONCEPTS.has(String(c.concept ?? "").trim())
+        (c) => c.kind === "Normal" && c.status !== "Pagado" && ENTRY_CONCEPTS.has(String(c.concept ?? "").trim())
       );
 
       for (const c of toDelete) {
@@ -392,13 +377,41 @@ export default function EditAccountModal({
         counts: { ...counts },
       });
 
-      // 4) tarjeta 10 pases
+      // 4) tarjeta 10 pases (AHORA: crea o renueva + cobra si hace falta)
       if (useCard && passCount > 0) {
         const holder = String(account.clientName ?? "").trim();
         if (!holder) throw new Error("No se puede usar tarjeta de pases sin nombre del cliente.");
 
-        const card = await findAccessCardByHolder(holder);
-        if (!card) await createAccessCardForHolder(holder, 10);
+        let willChargeSale = false;
+
+        const found = await findAccessCardByHolder(holder);
+
+        if (!found?.card?.id) {
+          await createAccessCardForHolder(holder, 10);
+          willChargeSale = true;
+        } else {
+          const remaining = remainingFromFound(found);
+          if (remaining < passCount) {
+            // renovar a 10 disponibles
+            await updateAccessCard(found.card.id, {
+              holderName: holder,
+              total: 10,
+              uses: 10,
+              transactionId: null,
+            } as any);
+            willChargeSale = true;
+          }
+        }
+
+        if (willChargeSale) {
+          await addCharge(accountId, {
+            kind: "Normal",
+            concept: "Tarjeta 10 pases (venta)",
+            qty: 1,
+            amount: PASS_PRICE,
+          });
+        }
+
         await consumeAccessCardByHolder(holder, passCount);
 
         await addCharge(accountId, {
@@ -523,7 +536,7 @@ export default function EditAccountModal({
                   onChange={(e) => setPassCount(clampInt(e.target.value))}
                 />
                 <div className="text-xs text-neutral-500">
-                  Si la tarjeta no existe, se creará para <b>{account.clientName}</b>.
+                  Si la tarjeta no existe o no alcanza, se creará/renovará y se cobrará para <b>{account.clientName}</b>.
                 </div>
               </div>
             )}
@@ -559,17 +572,12 @@ export default function EditAccountModal({
                           setSelectedKeys((prev) =>
                             active
                               ? prev.filter((k) => !(k.number === n && k.gender === keyGender))
-                              : [
-                                  ...prev,
-                                  { keyId: keyId(keyGender, n), number: n, gender: keyGender, duration: "1H" as any },
-                                ]
+                              : [...prev, { keyId: keyId(keyGender, n), number: n, gender: keyGender, duration: "1H" as any }]
                           )
                         }
                         className={
                           "px-3 py-2 rounded-full border text-sm font-semibold " +
-                          (active
-                            ? "bg-blue-600 text-white border-blue-600"
-                            : "bg-white border-neutral-200 hover:bg-neutral-50")
+                          (active ? "bg-blue-600 text-white border-blue-600" : "bg-white border-neutral-200 hover:bg-neutral-50")
                         }
                       >
                         {n}
@@ -590,17 +598,10 @@ export default function EditAccountModal({
                     .slice()
                     .sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number)
                     .map((k) => (
-                      <span
-                        key={k.keyId}
-                        className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-sm"
-                      >
+                      <span key={k.keyId} className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-sm">
                         {k.number}
                         {k.gender}
-                        <button
-                          type="button"
-                          className="opacity-70 hover:opacity-100"
-                          onClick={() => setSelectedKeys((prev) => prev.filter((x) => x.keyId !== k.keyId))}
-                        >
+                        <button type="button" className="opacity-70 hover:opacity-100" onClick={() => setSelectedKeys((prev) => prev.filter((x) => x.keyId !== k.keyId))}>
                           ✕
                         </button>
                       </span>

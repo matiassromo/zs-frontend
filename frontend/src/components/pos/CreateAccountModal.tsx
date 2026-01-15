@@ -1,4 +1,3 @@
-// src/components/pos/CreateAccountModal.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -20,6 +19,7 @@ import {
   findAccessCardByHolder,
   createAccessCardForHolder,
   consumeAccessCardByHolder,
+  updateAccessCard,
 } from "@/lib/apiv2/accessCards";
 
 const PARKING_HOURLY_RATE = 0.5;
@@ -106,7 +106,6 @@ async function reserveLockerKeys(
       })
     )
   );
-
 }
 
 /* --------- Tipo auxiliar tarjeta 10 pases ---------- */
@@ -116,7 +115,10 @@ type AccessCardState = {
   cardId: string | null;
   remaining: number;
   willCreateIfMissing: boolean;
-  createdNow: boolean;
+
+  createdNow: boolean; // se creó nueva
+  renewedNow: boolean; // se renovó/recargó existente
+
   error: string | null;
 };
 
@@ -127,12 +129,12 @@ const emptyCardState: AccessCardState = {
   remaining: 0,
   willCreateIfMissing: false,
   createdNow: false,
+  renewedNow: false,
   error: null,
 };
 
-function remainingFromFound(
-  found: { card: any; remaining?: any } | null | undefined
-): number {
+function remainingFromFound(found: { card: any; remaining?: any } | null | undefined): number {
+  // En tu UI: "Disponibles" = card.uses
   const uses = Number(found?.card?.uses);
   if (Number.isFinite(uses)) return uses;
 
@@ -194,10 +196,7 @@ export default function CreateAccountModal({
       }
 
       if (allClients.length > 0) {
-        const filtered = allClients
-          .filter((c) => matchesPrefixAnyWord(c.name, q))
-          .slice(0, 50);
-
+        const filtered = allClients.filter((c) => matchesPrefixAnyWord(c.name, q)).slice(0, 50);
         setResults(filtered);
         return;
       }
@@ -223,9 +222,7 @@ export default function CreateAccountModal({
     (async () => {
       const free = await fetchAvailableKeysByGender(keyGender);
 
-      const selectedNums = new Set(
-        selectedHash ? selectedHash.split(",").map((x) => parseInt(x, 10)) : []
-      );
+      const selectedNums = new Set(selectedHash ? selectedHash.split(",").map((x) => parseInt(x, 10)) : []);
 
       if (!alive) return;
       setAvailableKeys(free.filter((n) => !selectedNums.has(n)));
@@ -246,19 +243,18 @@ export default function CreateAccountModal({
     ).toFixed(2);
   }, [counts]);
 
+  // ✅ Venta tarjeta cuando: se creó nueva O se renovó existente O (no existe y se va a crear)
   const passSale = useMemo(() => {
     if (!usePassCard) return 0;
     if (passPeople <= 0) return 0;
+
     if (cardState.createdNow) return PRICES.PASS;
+    if (cardState.renewedNow) return PRICES.PASS;
+
     if (!cardState.exists && cardState.willCreateIfMissing) return PRICES.PASS;
+
     return 0;
-  }, [
-    usePassCard,
-    passPeople,
-    cardState.createdNow,
-    cardState.exists,
-    cardState.willCreateIfMissing,
-  ]);
+  }, [usePassCard, passPeople, cardState.createdNow, cardState.renewedNow, cardState.exists, cardState.willCreateIfMissing]);
 
   const keysSubtotal = 0;
   const parkingSubtotal = 0;
@@ -298,6 +294,7 @@ export default function CreateAccountModal({
       const found = await findAccessCardByHolder(holderName);
       const remaining = remainingFromFound(found);
 
+      // ✅ IMPORTANTE: NO apagues willCreateIfMissing si existe. Ese check ahora también sirve para renovar.
       setCardState((s) => ({
         ...s,
         loading: false,
@@ -305,8 +302,8 @@ export default function CreateAccountModal({
         cardId: found?.card?.id ?? null,
         remaining,
         error: null,
-        willCreateIfMissing: found ? false : s.willCreateIfMissing,
         createdNow: false,
+        renewedNow: false,
       }));
     } catch (e) {
       setCardState((s) => ({
@@ -329,20 +326,52 @@ export default function CreateAccountModal({
         ? Number((created as any)?.remaining)
         : 10;
 
-      setCardState({
+      setCardState((s) => ({
+        ...s,
         loading: false,
         exists: true,
         cardId: (created as any).card.id,
         remaining,
         willCreateIfMissing: true,
         createdNow: true,
+        renewedNow: false,
         error: null,
-      });
+      }));
     } catch (e) {
       setCardState((s) => ({
         ...s,
         loading: false,
         error: (e as Error).message ?? "Error creando tarjeta.",
+      }));
+    }
+  }
+
+  async function renewCardNow(holderName: string, cardId: string) {
+    setCardState((s) => ({ ...s, loading: true, error: null }));
+    try {
+      // ✅ En tu modelo: uses = disponibles. Renovar = volver a 10 disponibles.
+      await updateAccessCard(cardId, {
+        holderName,
+        total: 10,
+        uses: 10,
+        transactionId: null,
+      } as any);
+
+      setCardState((s) => ({
+        ...s,
+        loading: false,
+        exists: true,
+        cardId,
+        remaining: 10,
+        renewedNow: true,
+        createdNow: false,
+        error: null,
+      }));
+    } catch (e) {
+      setCardState((s) => ({
+        ...s,
+        loading: false,
+        error: (e as Error).message ?? "Error renovando tarjeta.",
       }));
     }
   }
@@ -354,79 +383,94 @@ export default function CreateAccountModal({
       const holder = await ensureClient(client, query);
       const holderName = holder.name;
 
-      const hasSomething =
-        normalPeople > 0 ||
-        (usePassCard && passPeople > 0) ||
-        selectedKeys.length > 0;
-
+      const hasSomething = normalPeople > 0 || (usePassCard && passPeople > 0) || selectedKeys.length > 0;
       if (!hasSomething) {
-        throw new Error(
-          "Agrega al menos 1 persona (normal o tarjeta) o selecciona llaves para continuar."
-        );
+        throw new Error("Agrega al menos 1 persona (normal o tarjeta) o selecciona llaves para continuar.");
       }
 
-      let willChargePassSale = false;
-      let remainingToValidate = 0;
+let willChargePassSale = false;
+let remainingToValidate = 0;
 
-      if (usePassCard && passPeople > 0) {
-        if (cardState.exists && cardState.cardId) {
-          remainingToValidate = cardState.remaining;
-          if (cardState.createdNow) willChargePassSale = true;
-        } else {
-          const found = await findAccessCardByHolder(holderName);
+if (usePassCard && passPeople > 0) {
+  // ✅ si el user YA renovó/creó con botones, respétalo y no recalcules desde cero
+  willChargePassSale = !!(cardState.createdNow || cardState.renewedNow);
 
-          if (found) {
-            const remaining = remainingFromFound(found);
-            remainingToValidate = remaining;
+  // parte de lo que ya tienes en estado (evita mismatch por nombre)
+  let cardId = cardState.cardId;
+  let remaining = Number.isFinite(Number(cardState.remaining)) ? Number(cardState.remaining) : 0;
 
-            setCardState((s) => ({
-              ...s,
-              exists: true,
-              cardId: found.card.id,
-              remaining,
-              createdNow: false,
-              error: null,
-            }));
-          } else {
-            if (!cardState.willCreateIfMissing) {
-              throw new Error(
-                "No existe tarjeta. Marca 'Crear y cobrar si no existe' para continuar."
-              );
-            }
+  // si aún no has buscado / no hay cardId, consulta al backend
+  if (!cardId) {
+    const found = await findAccessCardByHolder(holderName);
+    if (found?.card?.id) {
+      cardId = found.card.id;
+      remaining = remainingFromFound(found);
 
-            const created = await createAccessCardForHolder(holderName, 10);
-            willChargePassSale = true;
-
-            const uses = Number((created as any)?.card?.uses);
-            remainingToValidate = Number.isFinite(uses)
-              ? uses
-              : Number.isFinite(Number((created as any)?.remaining))
-              ? Number((created as any)?.remaining)
-              : 10;
-
-            setCardState((s) => ({
-              ...s,
-              exists: true,
-              cardId: (created as any).card.id,
-              remaining: remainingToValidate,
-              willCreateIfMissing: true,
-              createdNow: true,
-              error: null,
-            }));
-          }
-        }
-
-        if (remainingToValidate < passPeople) {
-          throw new Error(
-            `Tarjeta sin usos suficientes. Restantes: ${remainingToValidate}`
-          );
-        }
-      }
-
-      const keysToAttach: SelectedKey[] = selectedKeys.map((k) => ({
-        ...k,
-        duration,
+      setCardState((s) => ({
+        ...s,
+        exists: true,
+        cardId,
+        remaining,
+        createdNow: false,
+        renewedNow: false,
+        error: null,
       }));
+    }
+  }
+
+  if (cardId) {
+    // ✅ si ya renovaste antes con el botón, asumimos 10 disponibles
+    if (cardState.renewedNow) {
+      remaining = 10;
+    }
+
+    // si no alcanza, renueva SOLO si el check está activo
+    if (remaining < passPeople) {
+      if (!cardState.willCreateIfMissing) {
+        throw new Error(`Tarjeta sin usos suficientes. Restantes: ${remaining}`);
+      }
+
+      await renewCardNow(holderName, cardId);
+      willChargePassSale = true;
+      remainingToValidate = 10;
+    } else {
+      remainingToValidate = remaining;
+    }
+  } else {
+    // no existe -> si check, crea y cobra
+    if (!cardState.willCreateIfMissing) {
+      throw new Error("No existe tarjeta. Marca 'Crear y cobrar si no existe' para continuar.");
+    }
+
+    const created = await createAccessCardForHolder(holderName, 10);
+    willChargePassSale = true;
+
+    const uses = Number((created as any)?.card?.uses);
+    remainingToValidate = Number.isFinite(uses)
+      ? uses
+      : Number.isFinite(Number((created as any)?.remaining))
+      ? Number((created as any)?.remaining)
+      : 10;
+
+    setCardState((s) => ({
+      ...s,
+      exists: true,
+      cardId: (created as any).card.id,
+      remaining: remainingToValidate,
+      willCreateIfMissing: true,
+      createdNow: true,
+      renewedNow: false,
+      error: null,
+    }));
+  }
+
+  if (remainingToValidate < passPeople) {
+    throw new Error(`Tarjeta sin usos suficientes. Restantes: ${remainingToValidate}`);
+  }
+}
+
+
+      const keysToAttach: SelectedKey[] = selectedKeys.map((k) => ({ ...k, duration }));
 
       const account = await openAccount({
         clientId: holder.id,
@@ -439,6 +483,7 @@ export default function CreateAccountModal({
         createPassIfMissing: false,
       });
 
+      // ✅ Cargo venta tarjeta si se creó o se renovó
       if (usePassCard && passPeople > 0 && willChargePassSale) {
         await addCharge(account.id, {
           kind: "Normal",
@@ -448,8 +493,10 @@ export default function CreateAccountModal({
         });
       }
 
+      // ✅ Consumir usos (y dejar cargo “uso”)
       if (usePassCard && passPeople > 0) {
         await consumeAccessCardByHolder(holderName, passPeople);
+
         setCardState((s) => ({
           ...s,
           remaining: Math.max(0, (s.remaining ?? 0) - passPeople),
@@ -488,21 +535,15 @@ export default function CreateAccountModal({
 
   const canSubmit =
     (client || query.trim().length > 0) &&
-    (normalPeople > 0 ||
-      (usePassCard && passPeople > 0) ||
-      selectedKeys.length > 0);
+    (normalPeople > 0 || (usePassCard && passPeople > 0) || selectedKeys.length > 0);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
       <div className="w-full max-w-4xl max-h-[90vh] rounded-2xl border border-neutral-200 bg-white shadow-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-neutral-200 flex items-center justify-between">
           <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-              POS
-            </div>
-            <h2 className="text-lg font-semibold text-neutral-900">
-              Abrir nueva cuenta
-            </h2>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">POS</div>
+            <h2 className="text-lg font-semibold text-neutral-900">Abrir nueva cuenta</h2>
           </div>
           <button
             onClick={onClose}
@@ -514,9 +555,7 @@ export default function CreateAccountModal({
 
         <div className="px-6 py-5 overflow-y-auto max-h-[calc(90vh-140px)]">
           <div className="grid gap-2">
-            <label className="text-sm font-medium text-neutral-900">
-              Cliente
-            </label>
+            <label className="text-sm font-medium text-neutral-900">Cliente</label>
             <input
               className="border border-neutral-200 rounded-xl px-3 py-2"
               placeholder="Buscar o ingresar nombre…"
@@ -547,18 +586,10 @@ export default function CreateAccountModal({
           </div>
 
           <div className="mt-5 rounded-2xl border border-neutral-200 overflow-hidden">
-            <div className="px-4 py-3 border-b border-neutral-200 font-semibold">
-              Entradas (normal)
-            </div>
+            <div className="px-4 py-3 border-b border-neutral-200 font-semibold">Entradas (normal)</div>
             <div className="p-4 grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
               {(["A", "N", "TE", "D", "AC"] as const).map((k) => (
-                <Counter
-                  key={k}
-                  label={labelOf(k)}
-                  price={priceOf(k)}
-                  value={(counts as any)[k]}
-                  onChange={(v) => setCount(k, v)}
-                />
+                <Counter key={k} label={labelOf(k)} price={priceOf(k)} value={(counts as any)[k]} onChange={(v) => setCount(k, v)} />
               ))}
             </div>
           </div>
@@ -586,31 +617,22 @@ export default function CreateAccountModal({
             {usePassCard ? (
               <div className="p-4 grid lg:grid-cols-3 gap-4">
                 <div className="rounded-xl border border-neutral-200 p-3">
-                  <div className="text-sm font-medium">
-                    Personas que entran con tarjeta
-                  </div>
+                  <div className="text-sm font-medium">Personas que entran con tarjeta</div>
                   <input
                     type="number"
                     min={0}
                     className="mt-2 border border-neutral-200 rounded-xl px-3 py-2 w-40"
                     value={passPeople}
                     onChange={(e) => {
-                      const v = Math.max(
-                        0,
-                        parseInt(e.target.value || "0", 10)
-                      );
+                      const v = Math.max(0, parseInt(e.target.value || "0", 10));
                       setPassPeople(v);
                     }}
                   />
-                  <p className="mt-2 text-xs text-neutral-500">
-                    Se descontarán {passPeople} usos de la tarjeta.
-                  </p>
+                  <p className="mt-2 text-xs text-neutral-500">Se descontarán {passPeople} usos de la tarjeta.</p>
                 </div>
 
                 <div className="lg:col-span-2 rounded-xl border border-neutral-200 p-3">
-                  <div className="text-sm font-medium">
-                    Validar tarjeta 10 pases
-                  </div>
+                  <div className="text-sm font-medium">Validar tarjeta 10 pases</div>
 
                   <div className="mt-2 flex flex-wrap gap-2 items-center">
                     <button
@@ -646,17 +668,34 @@ export default function CreateAccountModal({
                         Crear ahora
                       </button>
                     )}
+
+                    {cardState.exists && cardState.willCreateIfMissing && cardState.cardId && (
+                      (cardState.remaining <= 0 || (passPeople > 0 && cardState.remaining < passPeople))
+                    ) && (
+                      <button
+                        className="px-3 py-2 rounded-xl bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700 disabled:opacity-60"
+                        disabled={!holderNameFromUI() || cardState.loading}
+                        onClick={() => renewCardNow(holderNameFromUI(), cardState.cardId!)}
+                        type="button"
+                        title="Recarga la tarjeta a 10 disponibles y se cobrará al crear la cuenta"
+                      >
+                        Renovar ahora
+                      </button>
+                    )}
                   </div>
 
                   <div className="mt-3 text-sm">
-                    {cardState.error && (
-                      <p className="text-rose-600">{cardState.error}</p>
-                    )}
+                    {cardState.error && <p className="text-rose-600">{cardState.error}</p>}
 
                     {cardState.exists ? (
                       <p>
-                        ✔ Tarjeta encontrada. Restantes:{" "}
-                        <b>{cardState.remaining}</b>
+                        ✔ Tarjeta encontrada. Restantes: <b>{cardState.remaining}</b>
+                        {passPeople > 0 && cardState.remaining < passPeople && (
+                          <span className="text-amber-700">
+                            {" "}
+                            · No alcanza para {passPeople}. {cardState.willCreateIfMissing ? "Se renovará y se cobrará." : "Marca “Crear y cobrar” para renovar."}
+                          </span>
+                        )}
                       </p>
                     ) : (
                       <p>
@@ -676,8 +715,7 @@ export default function CreateAccountModal({
               </div>
             ) : (
               <div className="p-4 text-sm text-neutral-500">
-                Activa esta sección si parte del grupo entra usando tarjeta (se
-                puede combinar con entradas normales).
+                Activa esta sección si parte del grupo entra usando tarjeta (se puede combinar con entradas normales).
               </div>
             )}
           </div>
@@ -697,14 +735,10 @@ export default function CreateAccountModal({
               </div>
 
               <div className="lg:col-span-2">
-                <div className="text-sm font-medium">
-                  Llaves disponibles ({keyGender})
-                </div>
+                <div className="text-sm font-medium">Llaves disponibles ({keyGender})</div>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {availableKeys.map((n) => {
-                    const active = selectedKeys.some(
-                      (k) => k.number === n && k.gender === keyGender
-                    );
+                    const active = selectedKeys.some((k) => k.number === n && k.gender === keyGender);
 
                     return (
                       <button
@@ -713,28 +747,13 @@ export default function CreateAccountModal({
                         onClick={() =>
                           setSelectedKeys((prev) =>
                             active
-                              ? prev.filter(
-                                  (k) =>
-                                    !(
-                                      k.number === n && k.gender === keyGender
-                                    )
-                                )
-                              : [
-                                  ...prev,
-                                  {
-                                    keyId: `${keyGender}-${n}`,
-                                    number: n,
-                                    gender: keyGender,
-                                    duration,
-                                  },
-                                ]
+                              ? prev.filter((k) => !(k.number === n && k.gender === keyGender))
+                              : [...prev, { keyId: `${keyGender}-${n}`, number: n, gender: keyGender, duration }]
                           )
                         }
                         className={
                           "px-3 py-2 rounded-full border text-sm font-semibold " +
-                          (active
-                            ? "bg-blue-600 text-white border-blue-600"
-                            : "bg-white border-neutral-200 hover:bg-neutral-50")
+                          (active ? "bg-blue-600 text-white border-blue-600" : "bg-white border-neutral-200 hover:bg-neutral-50")
                         }
                       >
                         {n}
@@ -742,11 +761,7 @@ export default function CreateAccountModal({
                     );
                   })}
 
-                  {availableKeys.length === 0 && (
-                    <span className="text-sm text-neutral-500">
-                      No hay llaves libres
-                    </span>
-                  )}
+                  {availableKeys.length === 0 && <span className="text-sm text-neutral-500">No hay llaves libres</span>}
                 </div>
               </div>
             </div>
@@ -757,26 +772,12 @@ export default function CreateAccountModal({
                 <div className="mt-2 flex flex-wrap gap-2">
                   {selectedKeys
                     .slice()
-                    .sort(
-                      (a, b) =>
-                        a.gender.localeCompare(b.gender) || a.number - b.number
-                    )
+                    .sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number)
                     .map((k) => (
-                      <span
-                        key={k.keyId}
-                        className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-sm"
-                      >
+                      <span key={k.keyId} className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-sm">
                         {k.number}
                         {k.gender}
-                        <button
-                          type="button"
-                          className="opacity-70 hover:opacity-100"
-                          onClick={() =>
-                            setSelectedKeys((prev) =>
-                              prev.filter((x) => x.keyId !== k.keyId)
-                            )
-                          }
-                        >
+                        <button type="button" className="opacity-70 hover:opacity-100" onClick={() => setSelectedKeys((prev) => prev.filter((x) => x.keyId !== k.keyId))}>
                           ✕
                         </button>
                       </span>
@@ -808,11 +809,7 @@ export default function CreateAccountModal({
         </div>
 
         <div className="px-6 py-4 border-t border-neutral-200 flex justify-end gap-2 bg-white">
-          <button
-            className="px-4 py-2 rounded-xl border border-neutral-200 hover:bg-neutral-50"
-            onClick={onClose}
-            disabled={creating}
-          >
+          <button className="px-4 py-2 rounded-xl border border-neutral-200 hover:bg-neutral-50" onClick={onClose} disabled={creating}>
             Cancelar
           </button>
           <button
@@ -862,9 +859,7 @@ function Counter({
           type="number"
           className="h-9 w-16 text-center border border-neutral-200 rounded-lg px-2"
           value={safe}
-          onChange={(e) =>
-            onChange(Math.max(0, parseInt(e.target.value || "0", 10)))
-          }
+          onChange={(e) => onChange(Math.max(0, parseInt(e.target.value || "0", 10)))}
           min={0}
         />
 
@@ -897,26 +892,14 @@ function TotalCard({
 }) {
   const isNumberCard = typeof valueNumber === "number";
   return (
-    <div
-      className={`rounded-xl border border-neutral-200 p-4 ${
-        highlight ? "bg-emerald-50" : "bg-white"
-      }`}
-    >
+    <div className={`rounded-xl border border-neutral-200 p-4 ${highlight ? "bg-emerald-50" : "bg-white"}`}>
       <div className="text-xs font-medium text-neutral-500">{label}</div>
       {isNumberCard ? (
-        <div
-          className={`mt-1 text-2xl font-semibold ${
-            highlight ? "text-emerald-700" : "text-neutral-900"
-          }`}
-        >
+        <div className={`mt-1 text-2xl font-semibold ${highlight ? "text-emerald-700" : "text-neutral-900"}`}>
           {valueNumber}
         </div>
       ) : (
-        <div
-          className={`mt-1 text-2xl font-semibold ${
-            highlight ? "text-emerald-700" : "text-neutral-900"
-          }`}
-        >
+        <div className={`mt-1 text-2xl font-semibold ${highlight ? "text-emerald-700" : "text-neutral-900"}`}>
           ${(value ?? 0).toFixed(2)}
         </div>
       )}
@@ -925,24 +908,8 @@ function TotalCard({
 }
 
 function labelOf(k: "A" | "N" | "TE" | "D" | "AC") {
-  return k === "A"
-    ? "Adulto"
-    : k === "N"
-    ? "Niño"
-    : k === "TE"
-    ? "3ra edad"
-    : k === "D"
-    ? "Discapacidad"
-    : "Acompañante";
+  return k === "A" ? "Adulto" : k === "N" ? "Niño" : k === "TE" ? "3ra edad" : k === "D" ? "Discapacidad" : "Acompañante";
 }
 function priceOf(k: "A" | "N" | "TE" | "D" | "AC") {
-  return k === "A"
-    ? PRICES.A
-    : k === "N"
-    ? PRICES.N
-    : k === "TE"
-    ? PRICES.TE
-    : k === "D"
-    ? PRICES.D
-    : PRICES.AC;
+  return k === "A" ? PRICES.A : k === "N" ? PRICES.N : k === "TE" ? PRICES.TE : k === "D" ? PRICES.D : PRICES.AC;
 }

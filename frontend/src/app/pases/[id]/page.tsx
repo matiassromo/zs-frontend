@@ -1,4 +1,3 @@
-// src/app/pases/[id]/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -71,7 +70,7 @@ export default function PassDetailPage() {
 
   const remaining = useMemo(() => {
     if (!card) return 0;
-    return card.uses;
+    return card.uses; // disponibles
   }, [card]);
 
   const lastUse = useMemo(() => {
@@ -92,7 +91,6 @@ export default function PassDetailPage() {
     const today = now.toISOString().substring(0, 10);
     const time = now.toTimeString().substring(0, 8);
 
-    // crear entradas en EntranceAccessCards
     for (let i = 0; i < qty; i++) {
       await createEntranceAccessCard({
         accessCardId: card.id,
@@ -102,36 +100,17 @@ export default function PassDetailPage() {
       });
     }
 
-    /**
-     * IMPORTANTE:
-     * - Si tu backend recalcula "uses" automáticamente por historial,
-     *   NO hagas updateAccessCard aquí.
-     * - Si tu backend NO recalcula uses, entonces descomenta el update de abajo.
-     */
-
-    // await updateAccessCard(card.id, {
-    //   holderName: card.holderName,
-    //   total: card.total,
-    //   uses: card.uses + qty,
-    //   transactionId: card.transactionId ?? null,
-    // });
-
     await load();
   }
 
   async function renewCard() {
     if (!card) return;
 
-    /**
-     * Renovar real debería:
-     * - (ideal) borrar historial y resetear uses=0
-     * Como aún no tenemos endpoint para limpiar historial,
-     * por ahora solo resetea uses a 0 si el backend lo permite.
-     */
+    // ✅ Renovar: volver a 10 disponibles (uses=total)
     await updateAccessCard(card.id, {
       holderName: card.holderName,
       total: card.total,
-      uses: 0,
+      uses: card.total, // 👈 antes estaba 0 (mal)
       transactionId: card.transactionId ?? null,
     });
 
@@ -194,11 +173,7 @@ export default function PassDetailPage() {
 
             <label className="grid gap-1 sm:col-span-2">
               <span className="text-sm">Etiqueta (solo visual)</span>
-              <input
-                className="input"
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-              />
+              <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} />
             </label>
 
             <div className="sm:col-span-3 flex justify-end">
@@ -214,15 +189,10 @@ export default function PassDetailPage() {
         <div className="font-medium mb-3">📊 Historial de usos</div>
 
         <div className="divide-y">
-          {history.length === 0 && (
-            <div className="py-4 text-center opacity-60">Sin usos</div>
-          )}
+          {history.length === 0 && <div className="py-4 text-center opacity-60">Sin usos</div>}
 
           {history.map((t, i) => (
-            <div
-              key={t.id}
-              className="py-2 grid grid-cols-1 sm:grid-cols-3 gap-2 items-center"
-            >
+            <div key={t.id} className="py-2 grid grid-cols-1 sm:grid-cols-3 gap-2 items-center">
               <div className="opacity-70 text-sm">
                 {i + 1}️⃣ {toDateTime(t).toLocaleString()}
               </div>

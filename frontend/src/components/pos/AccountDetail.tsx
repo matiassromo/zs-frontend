@@ -21,7 +21,6 @@ import {
 import { listKeys } from "@/lib/apiv2/keys";
 import { confirm, fire } from "@/lib/ui/swal";
 import EditAccountModal from "@/components/pos/EditAccountModal";
-import { consumeAccessCardByHolder } from "@/lib/apiv2/accessCards";
 
 // ✅ POS lock / caja diaria
 import { toDateKey, getCashboxByDate, addPosPaymentMove } from "@/lib/apiv2/cashbox";
@@ -29,8 +28,6 @@ import { toDateKey, getCashboxByDate, addPosPaymentMove } from "@/lib/apiv2/cash
 // ✅ bar
 import { listBarProducts } from "@/lib/apiv2/barProducts";
 import type { BarProduct } from "@/types/barProduct";
-
-const PRICES_LOCAL = { A: 7, N: 4, TE: 5, D: 5, AC: 1, PASS: 55 };
 
 type PayMethod = "Efectivo" | "Transferencia";
 
@@ -52,6 +49,9 @@ function emitCashboxChanged(dateKey: string) {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent("zs:cashbox-changed", { detail: { dateKey } }));
 }
+
+/* ----------------- LLAVES: señales del módulo /llaves ----------------- */
+const SINCE_MAP_KEY = "zs:keys:sinceMap";
 
 /* ----------------- LLAVES: helpers para display desde summary.keys ----------------- */
 function normalizeStoredKeys(raw: any): { gender: "H" | "M"; number: number; duration?: any }[] {
@@ -169,9 +169,10 @@ export default function AccountDetail({
     return concept;
   }
 
-  async function cleanupKeyChargesIfNoKeys(chNow: Charge[]) {
+  async function cleanupKeyChargesIfNoKeys(chNow: Charge[], sNow?: AccountSummary | null) {
+    const st = (sNow ?? summary)?.status;
     // ✅ NO modificar cargos si la cuenta no está abierta (deleteCharge lo bloquea)
-    if (summary?.status !== "Abierta") return;
+    if (st !== "Abierta") return;
 
     // si no hay llaves ocupadas -> borra cargos Key pendientes (reales, no synth)
     if (liveKeyConcept) return;
@@ -182,15 +183,10 @@ export default function AccountDetail({
     }
   }
 
-
   async function loadAll(live?: string | null) {
     setLoading(true);
 
-    const [s, ch, pm] = await Promise.all([
-      getAccount(accountId),
-      listCharges(accountId),
-      listPayments(accountId),
-    ]);
+    const [s, ch, pm] = await Promise.all([getAccount(accountId), listCharges(accountId), listPayments(accountId)]);
 
     setSummary(s);
     setCharges(ch);
@@ -202,10 +198,16 @@ export default function AccountDetail({
 
     // ✅ si ya no hay llaves, borra cargo Key del backend (solo si cuenta abierta)
     if (s.status === "Abierta" && !liveNow) {
-      await cleanupKeyChargesIfNoKeys(ch);
+      await cleanupKeyChargesIfNoKeys(ch, s);
       const ch2 = await listCharges(accountId);
       setCharges(ch2);
     }
+  }
+
+  async function hardRefreshFromKeysSignal() {
+    // evita doble listKeys(): refreshLiveKeys() ya consulta backend y retorna live
+    const live = await refreshLiveKeys();
+    await loadAll(live);
   }
 
   useEffect(() => {
@@ -229,31 +231,92 @@ export default function AccountDetail({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summary, accountId]);
 
-  // ✅ escuchar cambios de llaves emitidos por /llaves
+  // ✅ escuchar cambios de llaves emitidos por /llaves (y aliases por si cambian el nombre del evento)
   useEffect(() => {
     async function onKeysChanged(e: any) {
+      // si viene accountId, filtra; si NO viene, refresca igual (caso liberar desde lockers)
       const acc = e?.detail?.accountId;
       if (!acc || String(acc) === String(accountId)) {
-        await refreshLiveKeys();
-        await loadAll();
+        await hardRefreshFromKeysSignal();
       }
     }
+
     window.addEventListener("zs:keys-changed", onKeysChanged as any);
-    return () => window.removeEventListener("zs:keys-changed", onKeysChanged as any);
+    window.addEventListener("zs:lockerkeys-changed", onKeysChanged as any);
+    window.addEventListener("zs:lockers-changed", onKeysChanged as any);
+
+    return () => {
+      window.removeEventListener("zs:keys-changed", onKeysChanged as any);
+      window.removeEventListener("zs:lockerkeys-changed", onKeysChanged as any);
+      window.removeEventListener("zs:lockers-changed", onKeysChanged as any);
+    };
   }, [accountId]);
 
-  // ✅ opcional multi-tab
+  // ✅ fallback: si /llaves solo toca localStorage (sinceMap) y NO emite evento, detecta cambios
+  // - "storage" cubre multi-tab
+  // - "visibilitychange" cubre volver al tab después de liberar
+  useEffect(() => {
+    let lastSince = "";
+
+    function readSince() {
+      try {
+        return window.localStorage.getItem(SINCE_MAP_KEY) ?? "";
+      } catch {
+        return "";
+      }
+    }
+
+    async function maybeRefresh() {
+      const now = readSince();
+      if (now !== lastSince) {
+        lastSince = now;
+        await hardRefreshFromKeysSignal();
+      }
+    }
+
+    lastSince = readSince();
+
+    function onStorage(ev: StorageEvent) {
+      if (ev.key === SINCE_MAP_KEY) {
+        void maybeRefresh();
+      }
+    }
+
+    function onVisible() {
+      if (document.visibilityState === "visible") {
+        void maybeRefresh();
+      }
+    }
+
+    window.addEventListener("storage", onStorage);
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [accountId]);
+
+  // ✅ opcional multi-tab (BroadcastChannel)
   useEffect(() => {
     let bc: BroadcastChannel | null = null;
     try {
       bc = new BroadcastChannel("zs:bus");
       bc.onmessage = async (evt) => {
         const data = (evt as any)?.data;
-        if (data?.type !== "keys-changed") return;
+        if (!data) return;
+
+        // soporta varios tipos por compatibilidad
+        const isKeys =
+          data?.type === "keys-changed" ||
+          data?.type === "lockerkeys-changed" ||
+          data?.type === "lockers-changed";
+
+        if (!isKeys) return;
+
         const acc = data?.accountId;
         if (!acc || String(acc) === String(accountId)) {
-          await refreshLiveKeys();
-          await loadAll();
+          await hardRefreshFromKeysSignal();
         }
       };
     } catch {}
@@ -446,7 +509,7 @@ export default function AccountDetail({
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
     const lastKey = keyCharges[0] ? [keyCharges[0]] : [];
-    const computedKeyConcept = liveKeyConcept; // ✅ aquí manda el estado real
+    const computedKeyConcept = liveKeyConcept; // ✅ estado real
 
     const shouldInject = lastKey.length === 0 && !!computedKeyConcept;
 
@@ -468,7 +531,7 @@ export default function AccountDetail({
     return [...nonKey, ...lastKey, ...injected].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }, [charges, summary?.openedAt, liveKeyConcept]);
 
-  // ✅ ADAPTADOR para AddEntriesModal (PosAccount)
+  // ✅ ADAPTADOR para EditAccountModal (PosAccount)
   const accountForEntries: PosAccount | null = useMemo(() => {
     if (!summary) return null;
     return {
