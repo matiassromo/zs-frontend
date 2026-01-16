@@ -8,6 +8,7 @@ import type { BarOrder, BarOrderDetail } from "@/types/barOrder";
 import {
   listBarProducts,
   createBarProduct,
+  updateBarProduct,
 } from "@/lib/apiv2/barProducts";
 import {
   createBarOrder,
@@ -76,6 +77,29 @@ export default function BarPage() {
     setNewName("");
     setNewQty(0);
     setNewPrice(0);
+  }
+
+  // Ajustar stock de producto
+  async function handleAdjustStock(product: BarProduct, delta: number) {
+    const newQty = product.qty + delta;
+    if (newQty < 0) {
+      toast("error", "El stock no puede ser negativo");
+      return;
+    }
+
+    try {
+      const updated = await updateBarProduct(product.id, {
+        name: product.name,
+        qty: newQty,
+        unitPrice: product.unitPrice,
+      });
+      setProducts((prev) =>
+        prev.map((p) => (p.id === product.id ? updated : p))
+      );
+      toast("success", `Stock actualizado: ${product.name} → ${newQty}`);
+    } catch (error: any) {
+      toast("error", error?.message ?? "No se pudo actualizar el stock");
+    }
   }
 
   // Crear nueva orden vacía
@@ -189,19 +213,20 @@ export default function BarPage() {
                 <th className="text-left px-3 py-2">Nombre</th>
                 <th className="text-right px-3 py-2">Stock</th>
                 <th className="text-right px-3 py-2">Precio</th>
+                <th className="text-center px-3 py-2">Ajustar Stock</th>
               </tr>
             </thead>
             <tbody>
               {loadingProducts && (
                 <tr>
-                  <td className="px-3 py-2 text-center" colSpan={3}>
+                  <td className="px-3 py-2 text-center" colSpan={4}>
                     Cargando productos...
                   </td>
                 </tr>
               )}
               {!loadingProducts && products.length === 0 && (
                 <tr>
-                  <td className="px-3 py-2 text-center" colSpan={3}>
+                  <td className="px-3 py-2 text-center" colSpan={4}>
                     No hay productos. Crea el primero arriba.
                   </td>
                 </tr>
@@ -212,6 +237,42 @@ export default function BarPage() {
                   <td className="px-3 py-2 text-right">{p.qty}</td>
                   <td className="px-3 py-2 text-right">
                     ${p.unitPrice.toFixed(2)}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center justify-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleAdjustStock(p, -1)}
+                        className="px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-700 hover:bg-red-200"
+                        title="Disminuir 1"
+                      >
+                        -1
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAdjustStock(p, 1)}
+                        className="px-2 py-1 text-xs font-medium rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                        title="Aumentar 1"
+                      >
+                        +1
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAdjustStock(p, 5)}
+                        className="px-2 py-1 text-xs font-medium rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                        title="Aumentar 5"
+                      >
+                        +5
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAdjustStock(p, 10)}
+                        className="px-2 py-1 text-xs font-medium rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                        title="Aumentar 10"
+                      >
+                        +10
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
