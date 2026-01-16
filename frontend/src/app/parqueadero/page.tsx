@@ -12,8 +12,6 @@ import {
 import TransactionMappingModal from "@/components/shared/TransactionMappingModal";
 import { toast } from "@/lib/ui/swal";
 
-const HOURLY_RATE = 0.5;
-
 // YYYY-MM-DD
 function todayDateOnly(): string {
   return new Date().toISOString().slice(0, 10);
@@ -28,29 +26,6 @@ function nowTimeOnly(): string {
 function formatTime(value: string | null | undefined): string {
   if (!value) return "-";
   return value.slice(0, 5);
-}
-
-// Calcula monto usando fecha + hora de entrada/salida
-function computeAmount(
-  parkingDate: string,
-  entryTime: string,
-  exitTime?: string | null
-): number {
-  if (!parkingDate || !entryTime) return 0;
-
-  const start = new Date(`${parkingDate}T${entryTime}`);
-  const end = exitTime
-    ? new Date(`${parkingDate}T${exitTime}`)
-    : new Date();
-
-  if (isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
-
-  const diffMs = end.getTime() - start.getTime();
-  if (diffMs <= 0) return HOURLY_RATE;
-
-  const diffHours = diffMs / (1000 * 60 * 60);
-  const billedBlocks = Math.ceil(diffHours);
-  return billedBlocks * HOURLY_RATE;
 }
 
 export default function ParkingPage() {
@@ -219,20 +194,14 @@ export default function ParkingPage() {
                 </tr>
               )}
 
-              {openParkings.map((p) => {
-                const amount = computeAmount(
-                  p.parkingDate,
-                  p.parkingEntryTime,
-                  null
-                );
-                return (
+              {openParkings.map((p) => (
                   <tr key={p.id} className="border-t">
                     <td className="px-3 py-2">{p.parkingDate}</td>
                     <td className="px-3 py-2">
                       {formatTime(p.parkingEntryTime)}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      ${amount.toFixed(2)}
+                      ${p.total.toFixed(2)}
                     </td>
                     <td className="px-3 py-2">
                       {p.transactionId ? (
@@ -264,8 +233,7 @@ export default function ParkingPage() {
                       </button>
                     </td>
                   </tr>
-                );
-              })}
+              ))}
             </tbody>
           </table>
         </div>
@@ -303,13 +271,7 @@ export default function ParkingPage() {
                 </tr>
               )}
 
-              {closedParkings.map((p) => {
-                const amount = computeAmount(
-                  p.parkingDate,
-                  p.parkingEntryTime,
-                  p.parkingExitTime ?? null
-                );
-                return (
+              {closedParkings.map((p) => (
                   <tr key={p.id} className="border-t">
                     <td className="px-3 py-2">{p.parkingDate}</td>
                     <td className="px-3 py-2">
@@ -319,7 +281,7 @@ export default function ParkingPage() {
                       {formatTime(p.parkingExitTime ?? null)}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      ${amount.toFixed(2)}
+                      ${p.total.toFixed(2)}
                     </td>
                     <td className="px-3 py-2">
                       {p.transactionId ? (
@@ -331,8 +293,7 @@ export default function ParkingPage() {
                       )}
                     </td>
                   </tr>
-                );
-              })}
+              ))}
             </tbody>
           </table>
         </div>
