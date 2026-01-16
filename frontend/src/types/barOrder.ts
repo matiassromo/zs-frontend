@@ -1,4 +1,5 @@
 import { BarProduct } from "./barProduct";
+import { TransactionItemDto } from "./transactionItem";
 
 /**
  * Estado de la orden de bar
@@ -7,14 +8,11 @@ export type BarOrderStatus = "Pendiente" | "Entregado";
 
 /**
  * Represents a bar order in the system
+ * Extends TransactionItemDto with bar order-specific fields
  */
-export interface BarOrder {
-  id: string;
-  transactionId?: string | null;
+export interface BarOrder extends TransactionItemDto {
   /** Fecha/hora de creación (OrderDate en el backend) */
   orderDate?: string;
-  /** Total calculado en backend (opcional) */
-  total?: number;
   /** Id de la cuenta POS asociada (si aplica) */
   accountId?: string | null;
   /** Estado de preparación/entrega */

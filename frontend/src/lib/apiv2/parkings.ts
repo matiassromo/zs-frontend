@@ -69,8 +69,13 @@ export async function deleteParking(id: string): Promise<void> {
  */
 function normalize(dto: any): Parking {
   return {
+    // TransactionItemDto base fields
     id: dto.id ?? dto.Id,
+    createdAt: dto.createdAt ?? dto.CreatedAt,
+    total: dto.total ?? dto.Total ?? 0,
+    transactionType: dto.transactionType ?? dto.TransactionType,
     transactionId: dto.transactionId ?? dto.TransactionId ?? null,
+    // Parking-specific fields
     parkingDate: dto.parkingDate ?? dto.ParkingDate,
     parkingEntryTime: dto.parkingEntryTime ?? dto.ParkingEntryTime,
     parkingExitTime: dto.parkingExitTime ?? dto.ParkingExitTime ?? null,

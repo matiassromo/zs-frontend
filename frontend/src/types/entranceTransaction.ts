@@ -1,3 +1,5 @@
+import { TransactionItemDto } from "./transactionItem";
+
 /**
  * EntranceTransaction entity type definitions
  * Based on OpenAPI schema: EntranceTransactionRequestDto
@@ -5,12 +7,10 @@
 
 /**
  * Represents an EntranceTransaction entity in the system
+ * Extends TransactionItemDto with entrance-specific fields
  * Tracks entrance transactions with visitor counts and timing information
  */
-export interface EntranceTransaction {
-  id: string;
-  transactionId?: string | null;
-  total: number;
+export interface EntranceTransaction extends TransactionItemDto {
   entranceDate?: string;
   entranceEntryTime?: string;
   entranceExitTime?: string | null;

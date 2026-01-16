@@ -69,9 +69,13 @@ export async function deleteEntranceTransaction(id: string): Promise<void> {
  */
 function normalize(dto: any): EntranceTransaction {
   return {
+    // TransactionItemDto base fields
     id: dto.id ?? dto.Id,
+    createdAt: dto.createdAt ?? dto.CreatedAt,
+    total: dto.total ?? dto.Total ?? 0,
+    transactionType: dto.transactionType ?? dto.TransactionType,
     transactionId: dto.transactionId ?? dto.TransactionId ?? null,
-    total : dto.total,
+    // EntranceTransaction-specific fields
     entranceDate: dto.entranceDate ?? dto.EntranceDate,
     entranceEntryTime: dto.entranceEntryTime ?? dto.EntranceEntryTime,
     entranceExitTime: dto.entranceExitTime ?? dto.EntranceExitTime ?? null,

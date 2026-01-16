@@ -205,10 +205,14 @@ function normalize(dto: any): AccessCard {
   const id = dto?.id ?? dto?.Id ?? dto?.accessCardId ?? dto?.AccessCardId;
 
   return {
+    // TransactionItemDto base fields
     id: String(id ?? ""),
+    createdAt: dto?.createdAt ?? dto?.CreatedAt,
     total: Number(dto?.total ?? dto?.Total ?? DEFAULT_TOTAL),
-    uses: Number(dto?.uses ?? dto?.Uses ?? 0),
+    transactionType: dto?.transactionType ?? dto?.TransactionType,
     transactionId: dto?.transactionId ?? dto?.TransactionId ?? null,
+    // AccessCard-specific fields
+    uses: Number(dto?.uses ?? dto?.Uses ?? 0),
     holderName: dto?.holderName ?? dto?.HolderName,
   };
 }

@@ -140,10 +140,14 @@ export async function deleteBarOrderDetail(orderId: string, barProductId: string
  */
 function normalizeBarOrder(dto: any): BarOrder {
   return {
+    // TransactionItemDto base fields
     id: dto.id ?? dto.Id,
+    createdAt: dto.createdAt ?? dto.CreatedAt,
+    total: dto.total ?? dto.Total ?? 0,
+    transactionType: dto.transactionType ?? dto.TransactionType,
     transactionId: dto.transactionId ?? dto.TransactionId ?? null,
+    // BarOrder-specific fields
     orderDate: dto.orderDate ?? dto.OrderDate,
-    total: dto.total ?? dto.Total,
     details: dto.details?.map(normalizeBarOrderDetail) ?? dto.Details?.map(normalizeBarOrderDetail) ?? [],
   } as BarOrder;
 }
