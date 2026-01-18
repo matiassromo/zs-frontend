@@ -1,3 +1,4 @@
+// src/components/pos/CreateAccountModal.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -22,8 +23,6 @@ import {
   updateAccessCard,
 } from "@/lib/apiv2/accessCards";
 
-const PARKING_HOURLY_RATE = 0.5;
-
 function norm(s: string) {
   return (s ?? "")
     .toLowerCase()
@@ -45,6 +44,14 @@ function formatDateOnly(d: Date): string {
 }
 function formatTimeOnly(d: Date): string {
   return d.toTimeString().slice(0, 8);
+}
+
+// ✅ GUID válido y NO vacío (evita Guid.Empty que rompe el mapa de nombres)
+function isNonEmptyGuid(v: any): v is string {
+  if (typeof v !== "string") return false;
+  const s = v.trim().toLowerCase();
+  if (s === "00000000-0000-0000-0000-000000000000") return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(s);
 }
 
 type Duration = "1H" | "8H" | "2M";
@@ -102,7 +109,7 @@ async function reserveLockerKeys(
         available: false,
         lastAssignedTo: clientId,
         notes: note,
-        lastAssignedAt: nowIso, // 👈 CLAVE
+        lastAssignedAt: nowIso,
       })
     )
   );
@@ -116,8 +123,8 @@ type AccessCardState = {
   remaining: number;
   willCreateIfMissing: boolean;
 
-  createdNow: boolean; // se creó nueva
-  renewedNow: boolean; // se renovó/recargó existente
+  createdNow: boolean;
+  renewedNow: boolean;
 
   error: string | null;
 };
@@ -134,12 +141,28 @@ const emptyCardState: AccessCardState = {
 };
 
 function remainingFromFound(found: { card: any; remaining?: any } | null | undefined): number {
-  // En tu UI: "Disponibles" = card.uses
   const uses = Number(found?.card?.uses);
   if (Number.isFinite(uses)) return uses;
 
   const fallback = Number(found?.remaining);
   return Number.isFinite(fallback) ? fallback : 0;
+}
+
+// ------------------ helpers localStorage map (parking -> nombre) ------------------
+const PARKING_NAME_MAP_KEY = "zs:parking:accountNameMap";
+
+function readParkingNameMap(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(window.localStorage.getItem(PARKING_NAME_MAP_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function writeParkingNameMap(next: Record<string, string>) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(PARKING_NAME_MAP_KEY, JSON.stringify(next));
 }
 
 export default function CreateAccountModal({
@@ -154,10 +177,10 @@ export default function CreateAccountModal({
   const [allClients, setAllClients] = useState<Client[]>([]);
   const [client, setClient] = useState<Client | null>(null);
 
-  // ✅ Entradas normales (siempre disponibles)
+  // Entradas normales
   const [counts, setCounts] = useState({ A: 0, N: 0, TE: 0, D: 0, AC: 0 });
 
-  // ✅ Tarjeta 10 pases (se puede combinar con normal)
+  // Tarjeta 10 pases
   const [usePassCard, setUsePassCard] = useState(false);
   const [passPeople, setPassPeople] = useState(0);
   const [cardState, setCardState] = useState<AccessCardState>(emptyCardState);
@@ -222,7 +245,9 @@ export default function CreateAccountModal({
     (async () => {
       const free = await fetchAvailableKeysByGender(keyGender);
 
-      const selectedNums = new Set(selectedHash ? selectedHash.split(",").map((x) => parseInt(x, 10)) : []);
+      const selectedNums = new Set(
+        selectedHash ? selectedHash.split(",").map((x) => parseInt(x, 10)) : []
+      );
 
       if (!alive) return;
       setAvailableKeys(free.filter((n) => !selectedNums.has(n)));
@@ -243,7 +268,7 @@ export default function CreateAccountModal({
     ).toFixed(2);
   }, [counts]);
 
-  // ✅ Venta tarjeta cuando: se creó nueva O se renovó existente O (no existe y se va a crear)
+  // Venta tarjeta cuando: se creó nueva o se renovó o (no existe y se va a crear)
   const passSale = useMemo(() => {
     if (!usePassCard) return 0;
     if (passPeople <= 0) return 0;
@@ -254,15 +279,16 @@ export default function CreateAccountModal({
     if (!cardState.exists && cardState.willCreateIfMissing) return PRICES.PASS;
 
     return 0;
-  }, [usePassCard, passPeople, cardState.createdNow, cardState.renewedNow, cardState.exists, cardState.willCreateIfMissing]);
+  }, [
+    usePassCard,
+    passPeople,
+    cardState.createdNow,
+    cardState.renewedNow,
+    cardState.exists,
+    cardState.willCreateIfMissing,
+  ]);
 
-  const keysSubtotal = 0;
-  const parkingSubtotal = 0;
-
-  const total = useMemo(
-    () => +(entriesSubtotal + passSale + keysSubtotal + parkingSubtotal).toFixed(2),
-    [entriesSubtotal, passSale, keysSubtotal, parkingSubtotal]
-  );
+  const total = useMemo(() => +(entriesSubtotal + passSale).toFixed(2), [entriesSubtotal, passSale]);
 
   function setCount(field: keyof typeof counts, v: number) {
     const n = Math.max(0, Math.floor(Number.isFinite(v) ? v : 0));
@@ -294,7 +320,6 @@ export default function CreateAccountModal({
       const found = await findAccessCardByHolder(holderName);
       const remaining = remainingFromFound(found);
 
-      // ✅ IMPORTANTE: NO apagues willCreateIfMissing si existe. Ese check ahora también sirve para renovar.
       setCardState((s) => ({
         ...s,
         loading: false,
@@ -349,7 +374,6 @@ export default function CreateAccountModal({
   async function renewCardNow(holderName: string, cardId: string) {
     setCardState((s) => ({ ...s, loading: true, error: null }));
     try {
-      // ✅ En tu modelo: uses = disponibles. Renovar = volver a 10 disponibles.
       await updateAccessCard(cardId, {
         holderName,
         total: 10,
@@ -383,92 +407,84 @@ export default function CreateAccountModal({
       const holder = await ensureClient(client, query);
       const holderName = holder.name;
 
-      const hasSomething = normalPeople > 0 || (usePassCard && passPeople > 0) || selectedKeys.length > 0;
+      const hasSomething =
+        normalPeople > 0 || (usePassCard && passPeople > 0) || selectedKeys.length > 0;
       if (!hasSomething) {
         throw new Error("Agrega al menos 1 persona (normal o tarjeta) o selecciona llaves para continuar.");
       }
 
-let willChargePassSale = false;
-let remainingToValidate = 0;
+      let willChargePassSale = false;
+      let remainingToValidate = 0;
 
-if (usePassCard && passPeople > 0) {
-  // ✅ si el user YA renovó/creó con botones, respétalo y no recalcules desde cero
-  willChargePassSale = !!(cardState.createdNow || cardState.renewedNow);
+      if (usePassCard && passPeople > 0) {
+        willChargePassSale = !!(cardState.createdNow || cardState.renewedNow);
 
-  // parte de lo que ya tienes en estado (evita mismatch por nombre)
-  let cardId = cardState.cardId;
-  let remaining = Number.isFinite(Number(cardState.remaining)) ? Number(cardState.remaining) : 0;
+        let cardId = cardState.cardId;
+        let remaining = Number.isFinite(Number(cardState.remaining)) ? Number(cardState.remaining) : 0;
 
-  // si aún no has buscado / no hay cardId, consulta al backend
-  if (!cardId) {
-    const found = await findAccessCardByHolder(holderName);
-    if (found?.card?.id) {
-      cardId = found.card.id;
-      remaining = remainingFromFound(found);
+        if (!cardId) {
+          const found = await findAccessCardByHolder(holderName);
+          if (found?.card?.id) {
+            cardId = found.card.id;
+            remaining = remainingFromFound(found);
 
-      setCardState((s) => ({
-        ...s,
-        exists: true,
-        cardId,
-        remaining,
-        createdNow: false,
-        renewedNow: false,
-        error: null,
-      }));
-    }
-  }
+            setCardState((s) => ({
+              ...s,
+              exists: true,
+              cardId,
+              remaining,
+              createdNow: false,
+              renewedNow: false,
+              error: null,
+            }));
+          }
+        }
 
-  if (cardId) {
-    // ✅ si ya renovaste antes con el botón, asumimos 10 disponibles
-    if (cardState.renewedNow) {
-      remaining = 10;
-    }
+        if (cardId) {
+          if (cardState.renewedNow) remaining = 10;
 
-    // si no alcanza, renueva SOLO si el check está activo
-    if (remaining < passPeople) {
-      if (!cardState.willCreateIfMissing) {
-        throw new Error(`Tarjeta sin usos suficientes. Restantes: ${remaining}`);
+          if (remaining < passPeople) {
+            if (!cardState.willCreateIfMissing) {
+              throw new Error(`Tarjeta sin usos suficientes. Restantes: ${remaining}`);
+            }
+
+            await renewCardNow(holderName, cardId);
+            willChargePassSale = true;
+            remainingToValidate = 10;
+          } else {
+            remainingToValidate = remaining;
+          }
+        } else {
+          if (!cardState.willCreateIfMissing) {
+            throw new Error("No existe tarjeta. Marca 'Crear y cobrar si no existe' para continuar.");
+          }
+
+          const created = await createAccessCardForHolder(holderName, 10);
+          willChargePassSale = true;
+
+          const uses = Number((created as any)?.card?.uses);
+          remainingToValidate = Number.isFinite(uses)
+            ? uses
+            : Number.isFinite(Number((created as any)?.remaining))
+            ? Number((created as any)?.remaining)
+            : 10;
+
+          setCardState((s) => ({
+            ...s,
+            exists: true,
+            cardId: (created as any).card.id,
+            remaining: remainingToValidate,
+            willCreateIfMissing: true,
+            createdNow: true,
+            renewedNow: false,
+            error: null,
+          }));
+        }
+
+        if (remainingToValidate < passPeople) {
+          throw new Error(`Tarjeta sin usos suficientes. Restantes: ${remainingToValidate}`);
+        }
       }
-
-      await renewCardNow(holderName, cardId);
-      willChargePassSale = true;
-      remainingToValidate = 10;
-    } else {
-      remainingToValidate = remaining;
-    }
-  } else {
-    // no existe -> si check, crea y cobra
-    if (!cardState.willCreateIfMissing) {
-      throw new Error("No existe tarjeta. Marca 'Crear y cobrar si no existe' para continuar.");
-    }
-
-    const created = await createAccessCardForHolder(holderName, 10);
-    willChargePassSale = true;
-
-    const uses = Number((created as any)?.card?.uses);
-    remainingToValidate = Number.isFinite(uses)
-      ? uses
-      : Number.isFinite(Number((created as any)?.remaining))
-      ? Number((created as any)?.remaining)
-      : 10;
-
-    setCardState((s) => ({
-      ...s,
-      exists: true,
-      cardId: (created as any).card.id,
-      remaining: remainingToValidate,
-      willCreateIfMissing: true,
-      createdNow: true,
-      renewedNow: false,
-      error: null,
-    }));
-  }
-
-  if (remainingToValidate < passPeople) {
-    throw new Error(`Tarjeta sin usos suficientes. Restantes: ${remainingToValidate}`);
-  }
-}
-
 
       const keysToAttach: SelectedKey[] = selectedKeys.map((k) => ({ ...k, duration }));
 
@@ -483,7 +499,6 @@ if (usePassCard && passPeople > 0) {
         createPassIfMissing: false,
       });
 
-      // ✅ Cargo venta tarjeta si se creó o se renovó
       if (usePassCard && passPeople > 0 && willChargePassSale) {
         await addCharge(account.id, {
           kind: "Normal",
@@ -493,7 +508,6 @@ if (usePassCard && passPeople > 0) {
         });
       }
 
-      // ✅ Consumir usos (y dejar cargo “uso”)
       if (usePassCard && passPeople > 0) {
         await consumeAccessCardByHolder(holderName, passPeople);
 
@@ -514,14 +528,46 @@ if (usePassCard && passPeople > 0) {
         await reserveLockerKeys(selectedKeys, account.id, holder.id, holder.name);
       }
 
+      // ✅ PARQUEADERO: crear registro y guardar hint de nombre para mostrarlo en /parqueadero
       if (requiresParking) {
         const now = new Date();
+
+        // Fecha local YYYY-MM-DD
+        const parkingDate = [
+          now.getFullYear(),
+          String(now.getMonth() + 1).padStart(2, "0"),
+          String(now.getDate()).padStart(2, "0"),
+        ].join("-");
+
+        // Hora local HH:mm:ss
+        const parkingEntryTime = [
+          String(now.getHours()).padStart(2, "0"),
+          String(now.getMinutes()).padStart(2, "0"),
+          String(now.getSeconds()).padStart(2, "0"),
+        ].join(":");
+
+        const tx = isNonEmptyGuid(account.id) ? account.id : null;
+
         const parkingInput: ParkingRequestDto = {
-          parkingDate: formatDateOnly(now),
-          parkingEntryTime: formatTimeOnly(now),
+          parkingDate,
+          parkingEntryTime,
           parkingExitTime: null,
+          transactionId: tx,
         };
-        await createParking(parkingInput);
+
+        const createdParking = await createParking(parkingInput);
+
+        // Hint nombre para /parqueadero
+        const map = readParkingNameMap();
+        map[createdParking.id] = holder.name;
+
+        // ✅ SOLO guardar por transactionId si es GUID válido y NO vacío
+        const createdTx = createdParking.transactionId as string | null | undefined;
+        if (isNonEmptyGuid(createdTx)) {
+          map[createdTx] = holder.name;
+        }
+
+        writeParkingNameMap(map);
       }
 
       onCreated();
@@ -589,7 +635,13 @@ if (usePassCard && passPeople > 0) {
             <div className="px-4 py-3 border-b border-neutral-200 font-semibold">Entradas (normal)</div>
             <div className="p-4 grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
               {(["A", "N", "TE", "D", "AC"] as const).map((k) => (
-                <Counter key={k} label={labelOf(k)} price={priceOf(k)} value={(counts as any)[k]} onChange={(v) => setCount(k, v)} />
+                <Counter
+                  key={k}
+                  label={labelOf(k)}
+                  price={priceOf(k)}
+                  value={(counts as any)[k]}
+                  onChange={(v) => setCount(k, v)}
+                />
               ))}
             </div>
           </div>
@@ -669,19 +721,20 @@ if (usePassCard && passPeople > 0) {
                       </button>
                     )}
 
-                    {cardState.exists && cardState.willCreateIfMissing && cardState.cardId && (
-                      (cardState.remaining <= 0 || (passPeople > 0 && cardState.remaining < passPeople))
-                    ) && (
-                      <button
-                        className="px-3 py-2 rounded-xl bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700 disabled:opacity-60"
-                        disabled={!holderNameFromUI() || cardState.loading}
-                        onClick={() => renewCardNow(holderNameFromUI(), cardState.cardId!)}
-                        type="button"
-                        title="Recarga la tarjeta a 10 disponibles y se cobrará al crear la cuenta"
-                      >
-                        Renovar ahora
-                      </button>
-                    )}
+                    {cardState.exists &&
+                      cardState.willCreateIfMissing &&
+                      cardState.cardId &&
+                      (cardState.remaining <= 0 || (passPeople > 0 && cardState.remaining < passPeople)) && (
+                        <button
+                          className="px-3 py-2 rounded-xl bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700 disabled:opacity-60"
+                          disabled={!holderNameFromUI() || cardState.loading}
+                          onClick={() => renewCardNow(holderNameFromUI(), cardState.cardId!)}
+                          type="button"
+                          title="Recarga la tarjeta a 10 disponibles y se cobrará al crear la cuenta"
+                        >
+                          Renovar ahora
+                        </button>
+                      )}
                   </div>
 
                   <div className="mt-3 text-sm">
@@ -693,7 +746,8 @@ if (usePassCard && passPeople > 0) {
                         {passPeople > 0 && cardState.remaining < passPeople && (
                           <span className="text-amber-700">
                             {" "}
-                            · No alcanza para {passPeople}. {cardState.willCreateIfMissing ? "Se renovará y se cobrará." : "Marca “Crear y cobrar” para renovar."}
+                            · No alcanza para {passPeople}.{" "}
+                            {cardState.willCreateIfMissing ? "Se renovará y se cobrará." : "Marca “Crear y cobrar” para renovar."}
                           </span>
                         )}
                       </p>
@@ -774,10 +828,17 @@ if (usePassCard && passPeople > 0) {
                     .slice()
                     .sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number)
                     .map((k) => (
-                      <span key={k.keyId} className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-sm">
+                      <span
+                        key={k.keyId}
+                        className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-sm"
+                      >
                         {k.number}
                         {k.gender}
-                        <button type="button" className="opacity-70 hover:opacity-100" onClick={() => setSelectedKeys((prev) => prev.filter((x) => x.keyId !== k.keyId))}>
+                        <button
+                          type="button"
+                          className="opacity-70 hover:opacity-100"
+                          onClick={() => setSelectedKeys((prev) => prev.filter((x) => x.keyId !== k.keyId))}
+                        >
                           ✕
                         </button>
                       </span>
@@ -809,7 +870,11 @@ if (usePassCard && passPeople > 0) {
         </div>
 
         <div className="px-6 py-4 border-t border-neutral-200 flex justify-end gap-2 bg-white">
-          <button className="px-4 py-2 rounded-xl border border-neutral-200 hover:bg-neutral-50" onClick={onClose} disabled={creating}>
+          <button
+            className="px-4 py-2 rounded-xl border border-neutral-200 hover:bg-neutral-50"
+            onClick={onClose}
+            disabled={creating}
+          >
             Cancelar
           </button>
           <button

@@ -1,20 +1,19 @@
+// src/lib/apiv2/parkings.ts
 import { Parking, ParkingRequestDto } from "@/types/parking";
 import { http } from "./http";
 
-/**
- * Retrieves all parking records from the backend
- * @returns Promise<Parking[]> - Array of all parking records
- */
+function isNonEmptyGuid(v: any): v is string {
+  if (typeof v !== "string") return false;
+  const s = v.trim().toLowerCase();
+  if (s === "00000000-0000-0000-0000-000000000000") return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(s);
+}
+
 export async function listParkings(): Promise<Parking[]> {
   const dtos = await http<any[]>(`/api/Parkings`);
   return dtos.map(normalize);
 }
 
-/**
- * Retrieves a single parking record by ID
- * @param id - The UUID of the parking record to retrieve
- * @returns Promise<Parking | null> - The parking record or null if not found
- */
 export async function getParking(id: string): Promise<Parking | null> {
   try {
     const dto = await http<any>(`/api/Parkings/${id}`);
@@ -25,57 +24,46 @@ export async function getParking(id: string): Promise<Parking | null> {
   }
 }
 
-/**
- * Creates a new parking record
- * @param input - The parking data to create
- * @returns Promise<Parking> - The newly created parking record
- */
 export async function createParking(input: ParkingRequestDto): Promise<Parking> {
+  const safe: ParkingRequestDto = {
+    ...input,
+    transactionId: isNonEmptyGuid((input as any).transactionId) ? (input as any).transactionId : null,
+  };
+
   const dto = await http<any>(`/api/Parkings`, {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify(safe),
   });
+
   return normalize(dto);
 }
 
-/**
- * Updates an existing parking record
- * @param id - The UUID of the parking record to update
- * @param input - The updated parking data
- * @returns Promise<Parking> - The updated parking record
- */
 export async function updateParking(id: string, input: ParkingRequestDto): Promise<Parking> {
+  const safe: ParkingRequestDto = {
+    ...input,
+    transactionId: isNonEmptyGuid((input as any).transactionId) ? (input as any).transactionId : null,
+  };
+
   const dto = await http<any>(`/api/Parkings/${id}`, {
     method: "PUT",
-    body: JSON.stringify(input),
+    body: JSON.stringify(safe),
   });
+
   return normalize(dto);
 }
 
-/**
- * Deletes a parking record
- * @param id - The UUID of the parking record to delete
- * @returns Promise<void>
- */
 export async function deleteParking(id: string): Promise<void> {
   await http<void>(`/api/Parkings/${id}`, { method: "DELETE" });
 }
 
-/**
- * Normalizes the backend DTO to the frontend Parking interface
- * Handles both PascalCase (C#) and camelCase property names
- * @param dto - The raw DTO from the backend
- * @returns Parking - The normalized parking object
- */
 function normalize(dto: any): Parking {
+  const tx = dto.transactionId ?? dto.TransactionId ?? null;
   return {
-    // TransactionItemDto base fields
     id: dto.id ?? dto.Id,
     createdAt: dto.createdAt ?? dto.CreatedAt,
     total: dto.total ?? dto.Total ?? 0,
     transactionType: dto.transactionType ?? dto.TransactionType,
-    transactionId: dto.transactionId ?? dto.TransactionId ?? null,
-    // Parking-specific fields
+    transactionId: isNonEmptyGuid(tx) ? tx : null,
     parkingDate: dto.parkingDate ?? dto.ParkingDate,
     parkingEntryTime: dto.parkingEntryTime ?? dto.ParkingEntryTime,
     parkingExitTime: dto.parkingExitTime ?? dto.ParkingExitTime ?? null,
