@@ -151,6 +151,24 @@ function remainingFromFound(found: { card: any; remaining?: any } | null | undef
 // ------------------ helpers localStorage map (parking -> nombre) ------------------
 const PARKING_NAME_MAP_KEY = "zs:parking:accountNameMap";
 
+// ------------------ helpers localStorage map (accountId -> parkingId) ------------------
+const ACCOUNT_PARKING_MAP_KEY = "zs:parking:accountParkingMap";
+
+function readAccountParkingMap(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(window.localStorage.getItem(ACCOUNT_PARKING_MAP_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function writeAccountParkingMap(next: Record<string, string>) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(ACCOUNT_PARKING_MAP_KEY, JSON.stringify(next));
+}
+
+
 function readParkingNameMap(): Record<string, string> {
   if (typeof window === "undefined") return {};
   try {
@@ -529,47 +547,62 @@ export default function CreateAccountModal({
       }
 
       // ✅ PARQUEADERO: crear registro y guardar hint de nombre para mostrarlo en /parqueadero
-      if (requiresParking) {
-        const now = new Date();
+ // ✅ PARQUEADERO: crear registro y guardar hint de nombre para mostrarlo en /parqueadero
+if (requiresParking) {
+  const now = new Date();
 
-        // Fecha local YYYY-MM-DD
-        const parkingDate = [
-          now.getFullYear(),
-          String(now.getMonth() + 1).padStart(2, "0"),
-          String(now.getDate()).padStart(2, "0"),
-        ].join("-");
+  const parkingDate = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
 
-        // Hora local HH:mm:ss
-        const parkingEntryTime = [
-          String(now.getHours()).padStart(2, "0"),
-          String(now.getMinutes()).padStart(2, "0"),
-          String(now.getSeconds()).padStart(2, "0"),
-        ].join(":");
+  const parkingEntryTime = [
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join(":");
 
-        const tx = isNonEmptyGuid(account.id) ? account.id : null;
+  const tx = isNonEmptyGuid(account.id) ? account.id : null;
 
-        const parkingInput: ParkingRequestDto = {
-          parkingDate,
-          parkingEntryTime,
-          parkingExitTime: null,
-          transactionId: tx,
-        };
+  const parkingInput: ParkingRequestDto = {
+    parkingDate,
+    parkingEntryTime,
+    parkingExitTime: null,
+    transactionId: tx,
+  };
 
-        const createdParking = await createParking(parkingInput);
+  const createdParking = await createParking(parkingInput);
 
-        // Hint nombre para /parqueadero
-        const map = readParkingNameMap();
-        map[createdParking.id] = holder.name;
+  // ✅ vínculo fuerte accountId -> parkingId
+  const ap = readAccountParkingMap();
+  ap[String(account.id)] = String(createdParking.id);
+  writeAccountParkingMap(ap);
 
-        // ✅ SOLO guardar por transactionId si es GUID válido y NO vacío
-        const createdTx = createdParking.transactionId as string | null | undefined;
-        if (isNonEmptyGuid(createdTx)) {
-          map[createdTx] = holder.name;
-        }
+  // ✅ hint nombre para /parqueadero
+  const map = readParkingNameMap();
+  map[String(createdParking.id)] = holder.name;
+  const createdTx = createdParking.transactionId as string | null | undefined;
+  if (isNonEmptyGuid(createdTx)) map[String(createdTx)] = holder.name;
+  writeParkingNameMap(map);
 
-        writeParkingNameMap(map);
-      }
+  // ✅ cargo inicial en POS
+  await addCharge(account.id, {
+    kind: "Normal",
+    concept: "Parqueadero (en curso)",
+    qty: 1,
+    amount: 0,
+  });
 
+  // ✅ refrescar pantallas
+  try {
+    window.dispatchEvent(
+      new CustomEvent("zs:parking-changed", { detail: { accountId: String(account.id) } })
+    );
+  } catch {}
+
+  
+}
       onCreated();
       onClose();
     } catch (e) {
@@ -578,6 +611,8 @@ export default function CreateAccountModal({
       setCreating(false);
     }
   }
+
+
 
   const canSubmit =
     (client || query.trim().length > 0) &&
