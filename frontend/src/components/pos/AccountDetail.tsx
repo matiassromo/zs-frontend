@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+
 import {
   getAccount,
   listCharges,
@@ -772,19 +773,36 @@ async function handleAddExtraCharge(input: {
 
     const newQty = (p.qty ?? 0) - input.qty;
     if (newQty < 0) {
-      throw new Error(`Stock insuficiente. Disponible: ${p.qty ?? 0}`);
+      await fire({
+        icon: "warning",
+        title: "Stock insuficiente",
+        text: `Disponible: ${p.qty ?? 0}`,
+        confirmButtonText: "Entendido",
+      });
+      return;
     }
+
 
     // descontar stock primero (para evitar vender sin stock si falla luego)
     await updateBarProduct(p.id, { name: p.name, qty: newQty, unitPrice: p.unitPrice });
     emitBarProductsChanged();
   }
 
-  // ✅ crear cargo POS
-  await addCharge(accountId, { kind: "Normal", concept, qty: input.qty, amount: input.amount });
+// ✅ crear cargo POS
+    await addCharge(accountId, { kind: "Normal", concept, qty: input.qty, amount: input.amount });
 
-  await loadAll();
-  onChanged?.();
+    // ✅ SweetAlert éxito
+    await fire({
+      icon: "success",
+      title: "Cargo agregado",
+      text: `${concept} · x${input.qty} · $${(input.qty * input.amount).toFixed(2)}`,
+      timer: 1400,
+      showConfirmButton: false,
+    });
+
+    await loadAll();
+    onChanged?.();
+
 }
 
 
@@ -813,10 +831,51 @@ async function handleAddExtraCharge(input: {
     });
     if (!ok.isConfirmed) return;
 
+    // 1) Eliminar cargo
     await deleteCharge(accountId, c.id);
+
+    // 2) Si era cargo de BAR -> recuperar stock
+    const isBar = norm(c.concept).startsWith("bar:");
+    if (isBar) {
+      const name = c.concept.replace(/^bar\s*:\s*/i, "").trim(); // "Espumilla"
+      try {
+        const prods = await listBarProducts();
+        const p = prods.find((x) => norm(x.name) === norm(name)) ?? null;
+
+        if (p) {
+          const restoredQty = (p.qty ?? 0) + (c.qty ?? 0);
+          await updateBarProduct(p.id, { name: p.name, qty: restoredQty, unitPrice: p.unitPrice });
+          emitBarProductsChanged();
+
+          await fire({
+            icon: "success",
+            title: "Cargo eliminado",
+            text: `Stock recuperado: ${p.name} → ${restoredQty}`,
+            timer: 1400,
+            showConfirmButton: false,
+          });
+        } else {
+          await fire({
+            icon: "warning",
+            title: "Cargo eliminado",
+            text: "No pude recuperar stock: producto no encontrado en Bar (nombre no coincide).",
+            confirmButtonText: "Entendido",
+          });
+        }
+      } catch {
+        await fire({
+          icon: "warning",
+          title: "Cargo eliminado",
+          text: "El cargo se eliminó, pero falló la recuperación de stock. Ajusta el stock manualmente en Bar.",
+          confirmButtonText: "Entendido",
+        });
+      }
+    }
+
     await loadAll();
     onChanged?.();
   }
+
 
     // ✅ registrar salida parqueadero desde el detail
    async function handleParkingExitFromDetail() {
@@ -1587,16 +1646,21 @@ function AddChargeModal({
             Cancelar
           </button>
           <button
-            onClick={() => {
+            onClick={async () => {
               if (tab === "bar") {
                 if (!selected) return;
 
                 if ((selected.qty ?? 0) < qty) {
-                  alert(`Stock insuficiente. Disponible: ${selected.qty ?? 0}`);
+                  await fire({
+                    icon: "warning",
+                    title: "Stock insuficiente",
+                    text: `Disponible: ${selected.qty ?? 0}`,
+                    confirmButtonText: "Entendido",
+                  });
                   return;
                 }
 
-                onAdd({
+                await onAdd({
                   concept: `Bar: ${selected.name}`,
                   qty,
                   amount: selected.unitPrice,
@@ -1605,14 +1669,14 @@ function AddChargeModal({
                 return;
               }
 
-              onAdd({ concept, qty, amount });
+              await onAdd({ concept, qty, amount });
             }}
-
             className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-60"
             disabled={tab === "bar" ? !selected : !concept.trim() || !Number.isFinite(amount)}
           >
             Agregar
           </button>
+
         </div>
       </div>
     </div>
