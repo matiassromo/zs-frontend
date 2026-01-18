@@ -26,8 +26,9 @@ import EditAccountModal from "@/components/pos/EditAccountModal";
 import { toDateKey, getCashboxByDate, addPosPaymentMove } from "@/lib/apiv2/cashbox";
 
 // ✅ bar
-import { listBarProducts } from "@/lib/apiv2/barProducts";
+import { listBarProducts, updateBarProduct } from "@/lib/apiv2/barProducts";
 import type { BarProduct } from "@/types/barProduct";
+
 
 // ✅ parqueadero (vinculado a cuenta POS)
 import { listParkings, updateParking } from "@/lib/apiv2/parkings";
@@ -103,6 +104,17 @@ function parkingFinalAmountFromEntryExit(entryTs: number, exitTs: number): numbe
   const hours = Math.max(1, Math.ceil(diffMs / (60 * 60 * 1000)));
   return +(hours * PARKING_RATE_PER_HOUR).toFixed(2);
 }
+
+function emitBarProductsChanged() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("zs:bar-products-changed"));
+  try {
+    const bc = new BroadcastChannel("zs:bus");
+    bc.postMessage({ type: "bar-products-changed" });
+    bc.close();
+  } catch {}
+}
+
 
 // emitir para que /parqueadero refresque y mueva a historial
 function emitParkingChanged(accountId?: string | null) {
@@ -737,20 +749,44 @@ useEffect(() => {
     }
   }
 
-  async function handleAddExtraCharge(input: { concept: string; qty: number; amount: number }) {
-    if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
-    if (!summary) return;
-    if (summary.status !== "Abierta") throw new Error("Solo puedes modificar cuentas abiertas.");
+async function handleAddExtraCharge(input: {
+  concept: string;
+  qty: number;
+  amount: number;
+  barProductId?: string | null;
+}) {
+  if (!posEnabled) throw new Error(posReason ?? "POS cerrado para este día.");
+  if (!summary) return;
+  if (summary.status !== "Abierta") throw new Error("Solo puedes modificar cuentas abiertas.");
 
-    const concept = input.concept.trim();
-    if (!concept) throw new Error("Concepto requerido.");
-    if (input.qty <= 0) throw new Error("Cantidad inválida.");
-    if (!Number.isFinite(input.amount)) throw new Error("Monto inválido.");
+  const concept = input.concept.trim();
+  if (!concept) throw new Error("Concepto requerido.");
+  if (input.qty <= 0) throw new Error("Cantidad inválida.");
+  if (!Number.isFinite(input.amount)) throw new Error("Monto inválido.");
 
-    await addCharge(accountId, { kind: "Normal", concept, qty: input.qty, amount: input.amount });
-    await loadAll();
-    onChanged?.();
+  // ✅ si es bar: validar stock y descontar
+  if (input.barProductId) {
+    const prods = await listBarProducts();
+    const p = prods.find((x) => String(x.id) === String(input.barProductId)) ?? null;
+    if (!p) throw new Error("Producto de bar no encontrado.");
+
+    const newQty = (p.qty ?? 0) - input.qty;
+    if (newQty < 0) {
+      throw new Error(`Stock insuficiente. Disponible: ${p.qty ?? 0}`);
+    }
+
+    // descontar stock primero (para evitar vender sin stock si falla luego)
+    await updateBarProduct(p.id, { name: p.name, qty: newQty, unitPrice: p.unitPrice });
+    emitBarProductsChanged();
   }
+
+  // ✅ crear cargo POS
+  await addCharge(accountId, { kind: "Normal", concept, qty: input.qty, amount: input.amount });
+
+  await loadAll();
+  onChanged?.();
+}
+
 
   async function handleDeleteCharge(c: Charge) {
     if (!posEnabled) return;
@@ -1379,7 +1415,7 @@ function AddChargeModal({
   onAdd,
 }: {
   onCancel: () => void;
-  onAdd: (payload: { concept: string; qty: number; amount: number }) => Promise<void> | void;
+  onAdd: (payload: { concept: string; qty: number; amount: number; barProductId?: string | null }) => Promise<void> | void;
 }) {
   const [tab, setTab] = useState<"bar" | "manual">("bar");
   const [loading, setLoading] = useState(false);
@@ -1494,15 +1530,18 @@ function AddChargeModal({
                         type="button"
                       >
                         <div className="text-sm font-semibold">{p.name}</div>
-                        <div className="text-xs text-neutral-500">${p.unitPrice.toFixed(2)}</div>
+                        <div className="text-xs text-neutral-500">
+                          ${p.unitPrice.toFixed(2)} · Stock: {p.qty}
+                        </div>
                       </button>
                     ))}
                   </div>
-
                   <div className="text-sm text-neutral-700">
                     Seleccionado: <span className="font-semibold">{selected?.name ?? "—"}</span> · Unit:{" "}
-                    <span className="font-semibold">${(selected?.unitPrice ?? 0).toFixed(2)}</span>
+                    <span className="font-semibold">${(selected?.unitPrice ?? 0).toFixed(2)}</span> · Stock:{" "}
+                    <span className="font-semibold">{selected?.qty ?? 0}</span>
                   </div>
+
                 </>
               )}
             </div>
@@ -1551,11 +1590,24 @@ function AddChargeModal({
             onClick={() => {
               if (tab === "bar") {
                 if (!selected) return;
-                onAdd({ concept: `Bar: ${selected.name}`, qty, amount: selected.unitPrice });
+
+                if ((selected.qty ?? 0) < qty) {
+                  alert(`Stock insuficiente. Disponible: ${selected.qty ?? 0}`);
+                  return;
+                }
+
+                onAdd({
+                  concept: `Bar: ${selected.name}`,
+                  qty,
+                  amount: selected.unitPrice,
+                  barProductId: selected.id,
+                });
                 return;
               }
+
               onAdd({ concept, qty, amount });
             }}
+
             className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-60"
             disabled={tab === "bar" ? !selected : !concept.trim() || !Number.isFinite(amount)}
           >

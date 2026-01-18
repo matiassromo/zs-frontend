@@ -42,6 +42,31 @@ export default function BarPage() {
     loadOrders();
   }, []);
 
+  useEffect(() => {
+  async function onBarProductsChanged() {
+    await loadProducts();
+  }
+
+  window.addEventListener("zs:bar-products-changed", onBarProductsChanged as any);
+
+  let bc: BroadcastChannel | null = null;
+  try {
+    bc = new BroadcastChannel("zs:bus");
+    bc.onmessage = async (evt) => {
+      const data = (evt as any)?.data;
+      if (data?.type === "bar-products-changed") {
+        await loadProducts();
+      }
+    };
+  } catch {}
+
+  return () => {
+    window.removeEventListener("zs:bar-products-changed", onBarProductsChanged as any);
+    try { bc?.close(); } catch {}
+  };
+}, []);
+
+
   async function loadProducts() {
     setLoadingProducts(true);
     try {
