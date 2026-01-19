@@ -73,20 +73,7 @@ export default function PassDetailPage() {
     return toDateTime(last).toLocaleString();
   }, [history]);
 
-  async function renewCard() {
-    if (!card) return;
-
-    // Renovar: volver a 10 disponibles (uses=total)
-    await updateAccessCard(card.id, {
-      holderName: card.holderName,
-      total: card.total,
-      uses: card.total,
-      transactionId: card.transactionId ?? null,
-    });
-
-    await load();
-  }
-
+ 
   async function onDelete() {
     if (!confirm("¿Eliminar esta tarjeta?")) return;
 
@@ -108,9 +95,6 @@ export default function PassDetailPage() {
         </div>
 
         <div className="flex gap-2">
-          <button className="btn" onClick={renewCard} type="button">
-            🔄 Renovar
-          </button>
           <button className="btn" onClick={onDelete} type="button">
             🗑️ Eliminar
           </button>
@@ -137,7 +121,10 @@ export default function PassDetailPage() {
                 {i + 1}️⃣ {toDateTime(t).toLocaleString()}
               </div>
 
-              <div className="text-sm">Entrada</div>
+              <div className="text-sm">
+                Entrada · {Number(t.qty ?? 1)} pase(s)
+              </div>
+
 
               <div className="text-sm sm:text-right"></div>
             </div>

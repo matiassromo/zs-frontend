@@ -19,7 +19,6 @@ import type { ParkingRequestDto } from "@/types/parking";
 import {
   findAccessCardByHolder,
   createAccessCardForHolder,
-  consumeAccessCardByHolder,
   updateAccessCard,
 } from "@/lib/apiv2/accessCards";
 
@@ -527,12 +526,28 @@ export default function CreateAccountModal({
       }
 
       if (usePassCard && passPeople > 0) {
-        await consumeAccessCardByHolder(holderName, passPeople);
+        // ✅ usar el id real de tarjeta (del flujo previo: encontrada/creada/renovada)
+        const cardIdToUse =
+          cardState.cardId ||
+          (await findAccessCardByHolder(holderName))?.card?.id ||
+          null;
 
-        setCardState((s) => ({
-          ...s,
-          remaining: Math.max(0, (s.remaining ?? 0) - passPeople),
-        }));
+        if (cardIdToUse) {
+          const now = new Date();
+          await fetch("/api/EntranceAccessCards", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              accessCardId: cardIdToUse,
+              entranceDate: now.toISOString().slice(0, 10),
+              entranceEntryTime: now.toTimeString().slice(0, 8),
+              qty: passPeople,
+            }),
+          });
+        }
+
+       setCardState((s) => ({ ...s, remaining: Math.max(0, (s.remaining ?? 0) - passPeople) }));
+
 
         await addCharge(account.id, {
           kind: "Normal",
@@ -541,6 +556,7 @@ export default function CreateAccountModal({
           amount: 0,
         });
       }
+
 
       if (selectedKeys.length) {
         await reserveLockerKeys(selectedKeys, account.id, holder.id, holder.name);

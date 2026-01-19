@@ -74,8 +74,10 @@ function normalize(dto: any): EntranceAccessCard {
     entranceDate: dto.entranceDate ?? dto.EntranceDate,
     entranceEntryTime: dto.entranceEntryTime ?? dto.EntranceEntryTime,
     entranceExitTime: dto.entranceExitTime ?? dto.EntranceExitTime ?? null,
-  } as EntranceAccessCard;
+    qty: Number(dto.qty ?? dto.Qty ?? 1), // ✅ NUEVO
+  };
 }
+
 
 export default {
   listEntranceAccessCards,

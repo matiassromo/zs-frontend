@@ -5,10 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { listKeys, updateKey } from "@/lib/apiv2/keys";
 import type { Key } from "@/types/key";
 import type { LockerKey, LockerZone } from "@/types/lockerKey";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import Swal from "sweetalert2";
-
 
 const SINCE_MAP_KEY = "zs:keys:sinceMap";
 
@@ -26,18 +24,67 @@ function writeSinceMap(map: Record<string, string>) {
   window.localStorage.setItem(SINCE_MAP_KEY, JSON.stringify(map));
 }
 
+/* ---------------- UI atoms (POS) ---------------- */
+
+function PillButton({
+  children,
+  className = "",
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { className?: string }) {
+  return (
+    <button
+      {...props}
+      className={
+        "inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition disabled:opacity-50 " +
+        className
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+function Chip({
+  children,
+  variant = "neutral",
+}: {
+  children: React.ReactNode;
+  variant?: "neutral" | "blue" | "pink" | "success" | "danger";
+}) {
+  const cls =
+    variant === "blue"
+      ? "bg-sky-100 text-sky-800"
+      : variant === "pink"
+      ? "bg-pink-100 text-pink-800"
+      : variant === "success"
+      ? "bg-emerald-100 text-emerald-800"
+      : variant === "danger"
+      ? "bg-rose-100 text-rose-800"
+      : "bg-neutral-100 text-neutral-800";
+  return (
+    <span
+      className={
+        "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold " +
+        cls
+      }
+    >
+      {children}
+    </span>
+  );
+}
+
+/* ---------------- page ---------------- */
 
 export default function LlavesPage() {
   const [keys, setKeys] = useState<LockerKey[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // tick solo para timeFrom()
   const [tick, setTick] = useState(0);
-
   useEffect(() => {
     const t = setInterval(() => setTick((x) => x + 1), 1000);
     return () => clearInterval(t);
   }, []);
-
 
   async function load(silent = false) {
     if (!silent) setLoading(true);
@@ -46,7 +93,6 @@ export default function LlavesPage() {
       const raw: Key[] = await listKeys();
 
       // OJO: NO ordenes por id (GUID). Si puedes, ordena por keyCode.
-      // Si todavía no lo tienes en el type, deja esto como estaba.
       const ordered = [...raw].sort((a, b) => a.id.localeCompare(b.id));
 
       const sinceMap = readSinceMap();
@@ -58,14 +104,12 @@ export default function LlavesPage() {
         const code = `${indexInZone}${zone === "Hombres" ? "H" : "M"}`;
 
         const client = k.lastAssignedClient ?? null;
-
         const rawNote: string | null = k.notes ?? null;
 
         // ✅ extrae Cuenta 017, etc.
         const m = rawNote?.match(/Cuenta\s*(\d+)/i);
         const accountId = m?.[1] ?? null;
 
-        // si quieres seguir mostrando “cliente” sin el prefijo, OK
         const cleanNote = rawNote
           ? rawNote
               .replace(/^Cuenta\s*\d+\s*-\s*/i, "")
@@ -73,21 +117,17 @@ export default function LlavesPage() {
               .trim()
           : null;
 
-
         const assigned = client ? client : null;
-
         const sinceFromApi = k.lastAssignedAt ?? null;
 
         let since: string | null = null;
 
         if (!k.available) {
-          // 1) si viene del backend
           if (typeof sinceFromApi === "string") {
             const d = new Date(sinceFromApi);
             since = isNaN(d.getTime()) ? null : d.toISOString();
           }
 
-          // 2) fallback localStorage (reinicia si cambia asignado)
           if (!since) {
             const fp = `${assigned ?? ""}|${cleanNote ?? ""}`;
             const storedSince = sinceMap[k.id] ?? null;
@@ -103,7 +143,6 @@ export default function LlavesPage() {
             since = sinceMap[k.id] ?? null;
           }
         } else {
-          // si está libre, limpia cache
           if (sinceMap[k.id]) {
             delete sinceMap[k.id];
             delete (sinceMap as any)[`__fp:${k.id}`];
@@ -130,7 +169,6 @@ export default function LlavesPage() {
     }
   }
 
-
   useEffect(() => {
     load();
 
@@ -141,69 +179,67 @@ export default function LlavesPage() {
     return () => clearInterval(interval);
   }, []);
 
-  const hombres = useMemo(
-    () => keys.filter((k) => k.zone === "Hombres"),
-    [keys]
-  );
-  const mujeres = useMemo(
-    () => keys.filter((k) => k.zone === "Mujeres"),
-    [keys]
-  );
+  const hombres = useMemo(() => keys.filter((k) => k.zone === "Hombres"), [keys]);
+  const mujeres = useMemo(() => keys.filter((k) => k.zone === "Mujeres"), [keys]);
 
   const libresH = hombres.filter((k) => k.status === "disponible").length;
   const libresM = mujeres.filter((k) => k.status === "disponible").length;
 
   async function doRelease(code: string) {
-  const k = keys.find((x) => x.code === code);
-  if (!k) return;
+    const k = keys.find((x) => x.code === code);
+    if (!k) return;
 
-  await updateKey(k.id, {
-    available: true,
-    lastAssignedTo: null,
-    notes: null,
-    lastAssignedAt: null,
-  });
+    await updateKey(k.id, {
+      available: true,
+      lastAssignedTo: null,
+      notes: null,
+      lastAssignedAt: null,
+    });
 
-  // ✅ avisa al POS (misma pestaña / navegación)
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(
-      new CustomEvent("zs:keys-changed", {
-        detail: { accountId: (k as any).accountId ?? null, code },
-      })
-    );
+    // ✅ avisa al POS
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("zs:keys-changed", {
+          detail: { accountId: (k as any).accountId ?? null, code },
+        })
+      );
 
-    // ✅ opcional: multi-tab
-    try {
-      new BroadcastChannel("zs:bus").postMessage({
-        type: "keys-changed",
-        accountId: (k as any).accountId ?? null,
-        code,
-      });
-    } catch {}
+      // ✅ opcional: multi-tab
+      try {
+        new BroadcastChannel("zs:bus").postMessage({
+          type: "keys-changed",
+          accountId: (k as any).accountId ?? null,
+          code,
+        });
+      } catch {}
+    }
+
+    load();
   }
 
-  load();
-}
-
-
   return (
-    <div className="p-6 space-y-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Gestión de Lockers</h1>
-        <div className="flex items-center gap-3">
-          <div className="text-sm text-muted-foreground">
-            32 Lockers totales · {libresH + libresM} disponibles
+    <div className="p-6 space-y-4">
+      {/* Top row (sin títulos duplicados, estilo POS) */}
+      <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden">
+        <div className="p-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <Chip variant="neutral">32 lockers</Chip>
+            <Chip variant="success">{libresH + libresM} disponibles</Chip>
+            <Chip variant="blue">{libresH} H</Chip>
+            <Chip variant="pink">{libresM} M</Chip>
+            {loading ? <span className="text-sm text-neutral-500 ml-2">Cargando…</span> : null}
           </div>
         </div>
       </div>
 
-      <div className="grid gap-6 md:grid-cols-2">
+      {/* Panels */}
+      <div className="grid gap-4 md:grid-cols-2">
         <KeyPanel
           title="Llaves Vestidor Hombres (1H - 16H)"
           hint={`${libresH} llaves disponibles`}
           list={hombres}
           loading={loading}
-          badgeClass="bg-blue-100 text-blue-700"
+          chip={<Chip variant="blue">Hombres</Chip>}
           onRelease={doRelease}
         />
         <KeyPanel
@@ -211,11 +247,12 @@ export default function LlavesPage() {
           hint={`${libresM} llaves disponibles`}
           list={mujeres}
           loading={loading}
-          badgeClass="bg-pink-100 text-pink-700"
+          chip={<Chip variant="pink">Mujeres</Chip>}
           onRelease={doRelease}
         />
       </div>
 
+      {/* Table */}
       <KeyTable list={keys} onRelease={doRelease} />
     </div>
   );
@@ -228,41 +265,41 @@ function KeyPanel({
   hint,
   list,
   loading,
-  badgeClass,
+  chip,
   onRelease,
 }: {
   title: string;
   hint: string;
   list: LockerKey[];
   loading: boolean;
-  badgeClass: string;
+  chip: React.ReactNode;
   onRelease: (code: string) => Promise<void>;
 }) {
-
-  
   return (
-    <div className="rounded-2xl border bg-card p-5">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <span className={cn("px-2 py-1 rounded-full text-xs", badgeClass)}>
-            Vestidor
-          </span>
-          <h2 className="text-xl font-semibold">{title}</h2>
+    <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden">
+      <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            {chip}
+            <div className="text-sm font-semibold text-neutral-900">{title}</div>
+          </div>
+          <div className="text-xs text-neutral-500 mt-1">{hint}</div>
         </div>
       </div>
-      <p className="text-sm text-muted-foreground mb-4">{hint}</p>
 
-      <div className="grid grid-cols-4 gap-4">
-        {list
-          .sort((a, b) => parseInt(a.code) - parseInt(b.code))
-          .map((k) => (
-            <KeyCard key={k.id} k={k} onRelease={onRelease}/>
-          ))}
-        {loading && (
-          <div className="col-span-4 text-sm text-muted-foreground">
-            Cargando…
-          </div>
-        )}
+      <div className="p-4">
+        <div className="grid grid-cols-4 gap-3">
+          {list
+            .slice()
+            .sort((a, b) => parseInt(a.code) - parseInt(b.code))
+            .map((k) => (
+              <KeyCard key={k.id} k={k} onRelease={onRelease} />
+            ))}
+
+          {loading && (
+            <div className="col-span-4 text-sm text-neutral-500">Cargando…</div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -307,31 +344,30 @@ function KeyCard({
       className={cn(
         "aspect-[1/1] rounded-xl border flex flex-col items-center justify-center gap-1 transition",
         busy
-          ? "bg-red-50 border-red-200 hover:bg-red-100 cursor-pointer"
+          ? "bg-rose-50 border-rose-200 hover:bg-rose-100 cursor-pointer"
           : "bg-emerald-50 border-emerald-200 cursor-default"
       )}
       title={busy ? `Click para liberar · ${k.assignedTo ?? ""}` : "Libre"}
     >
-      <div className="text-lg font-semibold">{k.code}</div>
+      <div className="text-lg font-semibold text-neutral-900">{k.code}</div>
 
-      <div
+      <span
         className={cn(
-          "text-xs px-2 py-0.5 rounded-full",
-          busy ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"
+          "text-xs px-2 py-0.5 rounded-full font-semibold",
+          busy ? "bg-rose-100 text-rose-800" : "bg-emerald-100 text-emerald-800"
         )}
       >
         {busy ? "Ocupada" : "Libre"}
-      </div>
+      </span>
 
       {busy && (
-        <div className="text-[11px] text-muted-foreground line-clamp-1">
+        <div className="text-[11px] text-neutral-500 line-clamp-1">
           {k.assignedTo}
         </div>
       )}
     </button>
   );
 }
-
 
 function KeyTable({
   list,
@@ -351,58 +387,80 @@ function KeyTable({
   }, [list]);
 
   return (
-    <div className="rounded-2xl border bg-card">
-      <div className="p-5">
-        <h3 className="text-xl font-semibold">Control Detallado de Llaves</h3>
-        <p className="text-sm text-muted-foreground">
-          Estado actual de todas las llaves
-        </p>
+    <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden">
+      <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between">
+        <div className="font-semibold">Control detallado</div>
       </div>
+
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="border-t border-b bg-muted/40">
-            <tr>
-              <th className="text-left py-3 px-5">Número de Llave</th>
-              <th className="text-left py-3 px-5">Vestidor</th>
-              <th className="text-left py-3 px-5">Estado</th>
-              <th className="text-left py-3 px-5">Asignada a</th>
-              <th className="text-left py-3 px-5">Tiempo de Uso</th>
+        <table className="w-full text-sm min-w-[980px]">
+          <thead className="bg-neutral-50">
+            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              <th className="py-3 px-3">Llave</th>
+              <th className="py-3 px-3">Vestidor</th>
+              <th className="py-3 px-3">Estado</th>
+              <th className="py-3 px-3">Asignada a</th>
+              <th className="py-3 px-3">Tiempo</th>
+              <th className="py-3 px-3 text-right">Acción</th>
             </tr>
           </thead>
-          <tbody>
-            {sorted.map((k) => (
-              <tr key={k.id} className="border-b">
-                <td className="py-3 px-5 font-medium">{k.code}</td>
-                <td className="py-3 px-5">
-                  <span
-                    className={cn(
-                      "px-2 py-0.5 rounded-full text-xs",
-                      k.zone === "Hombres"
-                        ? "bg-blue-100 text-blue-700"
-                        : "bg-pink-100 text-pink-700"
+
+          <tbody className="[&>tr]:border-t [&>tr]:border-neutral-200">
+            {sorted.map((k) => {
+              const busy = k.status === "ocupada";
+              return (
+                <tr key={k.id} className="hover:bg-neutral-50">
+                  <td className="py-3 px-3 font-semibold text-neutral-900">{k.code}</td>
+                  <td className="py-3 px-3">
+                    {k.zone === "Hombres" ? (
+                      <Chip variant="blue">Hombres</Chip>
+                    ) : (
+                      <Chip variant="pink">Mujeres</Chip>
                     )}
-                  >
-                    {k.zone}
-                  </span>
-                </td>
-                <td className="py-3 px-5">
-                  <span
-                    className={cn(
-                      "px-2 py-0.5 rounded-full text-xs font-medium",
-                      k.status === "disponible"
-                        ? "bg-emerald-100 text-emerald-700"
-                        : "bg-red-100 text-red-700"
-                    )}
-                  >
-                    {k.status === "disponible" ? "Disponible" : "Ocupada"}
-                  </span>
-                </td>
-                <td className="py-3 px-5">{k.assignedTo ?? "-"}</td>
-                <td className="py-3 px-5">
-                  {k.since ? timeFrom(k.since) : "-"}
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="py-3 px-3">
+                    {busy ? <Chip variant="danger">Ocupada</Chip> : <Chip variant="success">Libre</Chip>}
+                  </td>
+                  <td className="py-3 px-3">{k.assignedTo ?? "-"}</td>
+                  <td className="py-3 px-3">{k.since ? timeFrom(k.since) : "-"}</td>
+                  <td className="py-3 px-3">
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        disabled={!busy}
+                        onClick={async () => {
+                          if (!busy) return;
+                          const res = await Swal.fire({
+                            icon: "question",
+                            title: `¿Liberar ${k.code}?`,
+                            text: `Asignada a: ${k.assignedTo ?? "—"}`,
+                            showCancelButton: true,
+                            confirmButtonText: "Sí, liberar",
+                            cancelButtonText: "Cancelar",
+                          });
+                          if (!res.isConfirmed) return;
+                          await onRelease(k.code);
+                          await Swal.fire({
+                            icon: "success",
+                            title: "Llave liberada",
+                            timer: 900,
+                            showConfirmButton: false,
+                          });
+                        }}
+                        className={cn(
+                          "inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition",
+                          busy
+                            ? "bg-neutral-900 text-white hover:bg-neutral-800"
+                            : "border border-neutral-200 bg-white text-neutral-400 cursor-not-allowed"
+                        )}
+                      >
+                        Liberar
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -420,6 +478,5 @@ function timeFrom(iso: string) {
   const s = totalSec % 60;
 
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(h)}:${pad(m)}:${pad(s)}`; // 00:05:12
+  return `${pad(h)}:${pad(m)}:${pad(s)}`;
 }
-

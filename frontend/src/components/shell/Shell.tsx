@@ -5,48 +5,38 @@ import { useMemo } from "react";
 import { usePathname } from "next/navigation";
 import Sidebar from "./Sidebar";
 
-type HeaderInfo = { kicker: string; title: string; badge: string | null };
+type HeaderInfo = { kicker: string | null; title: string; badge: string | null };
+
 
 function getHeader(path: string): HeaderInfo {
   // más específicas primero
   if (path.startsWith("/facturacion/pos")) {
-    return { kicker: "FACTURACIÓN", title: "Punto de Venta (POS)", badge: "Operación en curso" };
+    return { kicker: "FACTURACIÓN", title: "PUNTO DE VENTA (POS)", badge: "Operación en curso" };
   }
   if (path.startsWith("/facturacion/caja-diaria")) {
-    return { kicker: "FACTURACIÓN", title: "Caja Diaria", badge: null };
+    return { kicker: "FACTURACIÓN", title: "CAJA DIARIA", badge: null };
   }
   if (path.startsWith("/facturacion")) {
-    return { kicker: "FACTURACIÓN", title: "Facturación", badge: null };
+    return { kicker: "FACTURACIÓN", title: "FACTURACIÓN", badge: null };
   }
   if (path.startsWith("/clientes")) {
-    return { kicker: "CLIENTES", title: "Clientes", badge: null };
+    return { kicker: "CLIENTES", title: "CLIENTES", badge: null };
   }
   if (path.startsWith("/pases")) {
-    return { kicker: "TARJETAS Y PASES", title: "Tarjetas 10 Pases", badge: null };
+    return { kicker: null, title: "TARJETAS 10 PASES", badge: null };
   }
-  if (path.startsWith("/tarjetas-pases")) {
-    return { kicker: "TARJETAS Y PASES", title: "Tarjetas y Pases", badge: null };
-  }
+
   if (path.startsWith("/bar")) {
-    return { kicker: "BAR", title: "Bar", badge: null };
+    return { kicker: "BAR", title: "BAR", badge: null };
   }
   if (path.startsWith("/parqueadero")) {
-    return { kicker: "PARQUEADERO", title: "Parqueadero", badge: null };
+    return { kicker: "PARQUEADERO", title: "PARQUEADERO", badge: null };
   }
   if (path.startsWith("/llaves")) {
-    return { kicker: "LLAVES", title: "Llaves", badge: null };
-  }
-  if (path.startsWith("/lockers")) {
-    return { kicker: "LOCKERS", title: "Lockers", badge: null };
+    return { kicker: null, title: "LOCKERS", badge: null };
   }
   if (path.startsWith("/productos")) {
-    return { kicker: "PRODUCTOS", title: "Productos", badge: null };
-  }
-  if (path.startsWith("/ingresos")) {
-    return { kicker: "INGRESOS", title: "Ingresos", badge: null };
-  }
-  if (path.startsWith("/pagos")) {
-    return { kicker: "PAGOS", title: "Pagos", badge: null };
+    return { kicker: "PRODUCTOS", title: "PRODUCTOS", badge: null };
   }
   if (path.startsWith("/transacciones")) {
     return { kicker: "TRANSACCIONES", title: "Transacciones", badge: null };
@@ -71,9 +61,12 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           <header className="sticky top-0 z-10 border-b border-neutral-200 bg-white/90 backdrop-blur">
             <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
               <div className="space-y-0.5 min-w-0">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-                  {hdr.kicker}
-                </div>
+                {hdr.kicker &&
+                  hdr.kicker !== (hdr.title ?? "").toUpperCase() && (
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                      {hdr.kicker}
+                    </div>
+                  )}
 
                 <div className="flex items-center gap-2 min-w-0">
                   <div className="text-sm font-semibold text-neutral-900 truncate">
@@ -87,6 +80,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
                   )}
                 </div>
               </div>
+
 
               <div className="flex items-center gap-2 text-[11px] text-neutral-500">
                 <span className="hidden sm:inline">Hoy</span>

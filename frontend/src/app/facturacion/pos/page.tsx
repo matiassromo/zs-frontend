@@ -235,19 +235,10 @@ export default function PosPage() {
           {/* Detail BELOW */}
           <section className="min-w-0">
             {selectedId ? (
-              <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
-                <div className="border-b px-4 py-3">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Detalle de cuenta</div>
-                  <div className="text-sm text-neutral-600">
-                    Cuenta <span className="font-semibold text-neutral-900">#{selectedId}</span>
-                  </div>
-                </div>
+          <div className="p-0">
+            <AccountDetail accountId={selectedId} onChanged={load} />
+          </div>
 
-                {/* IMPORTANTE: no envuelvas AccountDetail con padding extra grande si quieres ancho completo */}
-                <div className="p-0">
-                  <AccountDetail accountId={selectedId} onChanged={load} />
-                </div>
-              </div>
             ) : (
               <div className="rounded-2xl border bg-white p-8 text-sm text-neutral-500 shadow-sm">
                 <div className="text-base font-semibold text-neutral-900">Selecciona una cuenta</div>

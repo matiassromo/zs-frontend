@@ -7,7 +7,7 @@ import type { Parking, ParkingRequestDto } from "@/types/parking";
 import { listParkings, updateParking, deleteParking } from "@/lib/apiv2/parkings";
 import { getAccount } from "@/lib/api/accounts";
 
-// ------------------ helpers fecha/hora ------------------
+/* ---------------- helpers fecha/hora ---------------- */
 
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
@@ -24,7 +24,9 @@ function isNonEmptyGuid(v: any): v is string {
   if (typeof v !== "string") return false;
   const s = v.trim().toLowerCase();
   if (s === "00000000-0000-0000-0000-000000000000") return false;
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(s);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+    s
+  );
 }
 
 // Mostrar solo HH:mm en la UI
@@ -33,7 +35,7 @@ function formatTime(value: string | null | undefined): string {
   return value.slice(0, 5);
 }
 
-// ------------------ helpers sorting ------------------
+/* ---------------- helpers sorting ---------------- */
 
 function toLocalTs(dateOnly?: string | null, timeOnly?: string | null): number {
   if (!dateOnly || !timeOnly) return 0;
@@ -64,7 +66,7 @@ function sortParkings(items: Parking[]): Parking[] {
   });
 }
 
-// ------------------ helpers localStorage map ------------------
+/* ---------------- localStorage map ---------------- */
 const PARKING_NAME_MAP_KEY = "zs:parking:accountNameMap";
 
 function readParkingNameMap(): Record<string, string> {
@@ -76,8 +78,8 @@ function readParkingNameMap(): Record<string, string> {
   }
 }
 
-// ------------------ PARQUEADERO: cálculo UI ------------------
-// Requisito: en vivo 0 -> (>=1h) 0.50 -> (>=2h) 1.00 ...
+/* ---------------- PARQUEADERO: cálculo UI ---------------- */
+// En vivo: 0 -> (>=1h) 0.50 -> (>=2h) 1.00 ...
 const PARKING_RATE_PER_HOUR = 0.5;
 
 function parseLocalDateTime(dateOnly?: string | null, timeOnly?: string | null): Date | null {
@@ -98,22 +100,23 @@ function computeLiveAmount(p: Parking): number {
   return +(hours * PARKING_RATE_PER_HOUR).toFixed(2);
 }
 
-// Historial (cerrados): si backend ya trae total, úsalo. Si no, calcula igual que vivo pero con exitTime.
+// Cerrados: si backend ya trae total úsalo; si no, fallback por horas o fracción
 function computeClosedAmountFallback(p: Parking): number {
   const start = parseLocalDateTime(p.parkingDate, p.parkingEntryTime);
   const end = parseLocalDateTime(p.parkingDate, p.parkingExitTime || "");
   if (!start || !end) return 0;
-  const ms = Math.max(0, end.getTime() - start.getTime());
 
-  const hours = Math.max(1, Math.ceil(ms / 3600000)); // ✅ hora o fracción
+  const ms = Math.max(0, end.getTime() - start.getTime());
+  const hours = Math.max(1, Math.ceil(ms / 3600000)); // hora o fracción
   return +(hours * PARKING_RATE_PER_HOUR).toFixed(2);
 }
 
-
-// ------------------ bus eventos (para refrescar POS / detail) ------------------
+/* ---------------- bus eventos ---------------- */
 function emitParkingChanged(accountId?: string | null) {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent("zs:parking-changed", { detail: { accountId: accountId ?? null } }));
+  window.dispatchEvent(
+    new CustomEvent("zs:parking-changed", { detail: { accountId: accountId ?? null } })
+  );
   try {
     const bc = new BroadcastChannel("zs:bus");
     bc.postMessage({ type: "parking-changed", accountId: accountId ?? null });
@@ -121,12 +124,57 @@ function emitParkingChanged(accountId?: string | null) {
   } catch {}
 }
 
+/* ---------------- UI atoms (POS) ---------------- */
+
+function PillButton({
+  children,
+  className = "",
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { className?: string }) {
+  return (
+    <button
+      {...props}
+      className={
+        "inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition disabled:opacity-50 " +
+        className
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+function Chip({
+  children,
+  variant = "neutral",
+}: {
+  children: React.ReactNode;
+  variant?: "neutral" | "success" | "warning" | "danger";
+}) {
+  const cls =
+    variant === "success"
+      ? "bg-emerald-100 text-emerald-800"
+      : variant === "warning"
+      ? "bg-amber-100 text-amber-800"
+      : variant === "danger"
+      ? "bg-rose-100 text-rose-800"
+      : "bg-neutral-100 text-neutral-800";
+
+  return (
+    <span className={"inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium " + cls}>
+      {children}
+    </span>
+  );
+}
+
+/* ---------------- page ---------------- */
+
 export default function ParkingPage() {
   const [parkings, setParkings] = useState<Parking[]>([]);
   const [loading, setLoading] = useState(true);
   const [deletingIds, setDeletingIds] = useState<Record<string, boolean>>({});
 
-  // transactionId -> nombre (cuando se puede resolver con getAccount)
+  // transactionId -> nombre (resuelto con getAccount)
   const [accountNames, setAccountNames] = useState<Record<string, string>>({});
 
   // parkingId (o transactionId) -> nombre (hint guardado desde POS)
@@ -150,7 +198,6 @@ export default function ParkingPage() {
     }
     window.addEventListener("zs:parking-changed", onParkingChanged as any);
 
-    // multi-tab
     let bc: BroadcastChannel | null = null;
     try {
       bc = new BroadcastChannel("zs:bus");
@@ -170,7 +217,9 @@ export default function ParkingPage() {
   }, []);
 
   async function hydrateAccountNames(items: Parking[]) {
-    const ids = Array.from(new Set(items.map((p) => p.transactionId).filter((x): x is string => isNonEmptyGuid(x))));
+    const ids = Array.from(
+      new Set(items.map((p) => p.transactionId).filter((x): x is string => isNonEmptyGuid(x)))
+    );
     if (!ids.length) return;
 
     setAccountNames((prev) => {
@@ -277,143 +326,193 @@ export default function ParkingPage() {
   function renderAccountName(p: Parking) {
     const txId = isNonEmptyGuid(p.transactionId) ? p.transactionId : null;
 
-    if (txId && accountNames[txId]) return <span className="font-medium">{accountNames[txId]}</span>;
+    if (txId && accountNames[txId]) return <span className="font-semibold text-neutral-900">{accountNames[txId]}</span>;
 
     const hintByParkingId = parkingNameMap[p.id];
-    if (hintByParkingId) return <span className="font-medium">{hintByParkingId}</span>;
+    if (hintByParkingId) return <span className="font-semibold text-neutral-900">{hintByParkingId}</span>;
 
-    if (txId && parkingNameMap[txId]) return <span className="font-medium">{parkingNameMap[txId]}</span>;
+    if (txId && parkingNameMap[txId]) return <span className="font-semibold text-neutral-900">{parkingNameMap[txId]}</span>;
 
-    if (!txId) return <span className="text-gray-400 italic text-xs">Sin cuenta</span>;
-    return <span className="text-gray-500 text-xs">Cargando…</span>;
+    if (!txId) return <span className="text-neutral-400 italic text-xs">Sin cuenta</span>;
+    return <span className="text-neutral-500 text-xs">Cargando…</span>;
   }
 
   // forzar re-render por tick
   void tick;
 
+  const stats = useMemo(() => {
+    const abiertos = openParkings.length;
+    const cerrados = closedParkings.length;
+    return { abiertos, cerrados, total: parkings.length };
+  }, [openParkings.length, closedParkings.length, parkings.length]);
+
   return (
-    <div className="p-8 space-y-8">
-      {/* Vehículos dentro */}
-      <section className="bg-white rounded-xl shadow p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Vehículos dentro</h2>
-          <span className="text-sm text-gray-500">{openParkings.length} activos</span>
+    <div className="p-6 space-y-4">
+      {/* Header tipo POS */}
+      <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-200">
+          <div className="text-sm font-semibold text-neutral-900">Parqueadero</div>
         </div>
 
-        <div className="border rounded-lg overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="text-left px-3 py-2">Fecha</th>
-                <th className="text-left px-3 py-2">Ingreso</th>
-                <th className="text-left px-3 py-2">Cuenta</th>
-                <th className="text-right px-3 py-2">Monto actual</th>
-                <th className="text-right px-3 py-2">Acciones</th>
+        <div className="p-4 grid gap-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="grid grid-cols-3 gap-3 w-full md:w-auto">
+              <div className="rounded-xl border border-neutral-200 bg-white p-4">
+                <div className="text-xs font-medium text-neutral-500">Activos</div>
+                <div className="mt-1 text-2xl font-semibold text-neutral-900">{stats.abiertos}</div>
+              </div>
+              <div className="rounded-xl border border-neutral-200 bg-white p-4">
+                <div className="text-xs font-medium text-neutral-500">Historial</div>
+                <div className="mt-1 text-2xl font-semibold text-neutral-900">{stats.cerrados}</div>
+              </div>
+              <div className="rounded-xl border border-neutral-200 bg-white p-4">
+                <div className="text-xs font-medium text-neutral-500">Total</div>
+                <div className="mt-1 text-2xl font-semibold text-neutral-900">{stats.total}</div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 justify-start md:justify-end">
+              {closedParkings.length > 0 && (
+                <PillButton
+                  onClick={handleClearHistory}
+                  type="button"
+                  className="border border-neutral-200 bg-white text-rose-700 hover:bg-rose-50"
+                >
+                  Limpiar historial
+                </PillButton>
+              )}
+
+              <PillButton
+                onClick={loadParkings}
+                type="button"
+                className="bg-neutral-900 text-white hover:bg-neutral-800"
+              >
+                Recargar
+              </PillButton>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Activos */}
+      <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between">
+          <div className="font-semibold">Vehículos dentro</div>
+          {loading ? <span className="text-sm text-neutral-500">Cargando…</span> : null}
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[860px]">
+            <thead className="bg-neutral-50">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                <th className="py-3 px-3">Fecha</th>
+                <th className="py-3 px-3">Ingreso</th>
+                <th className="py-3 px-3">Cuenta</th>
+                <th className="py-3 px-3 text-right">Monto actual</th>
+                <th className="py-3 px-3 text-right">Acciones</th>
               </tr>
             </thead>
 
-            <tbody>
+            <tbody className="[&>tr]:border-t [&>tr]:border-neutral-200">
               {loading && (
                 <tr>
-                  <td colSpan={5} className="px-3 py-4 text-center text-gray-500">
-                    Cargando registros...
+                  <td colSpan={5} className="py-10 px-3 text-center text-neutral-500">
+                    Cargando registros…
                   </td>
                 </tr>
               )}
 
               {!loading && openParkings.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-3 py-4 text-center text-gray-500">
+                  <td colSpan={5} className="py-10 px-3 text-center text-neutral-500">
                     No hay vehículos dentro actualmente.
                   </td>
                 </tr>
               )}
 
-              {openParkings.map((p) => {
-                const uiAmount = computeLiveAmount(p);
-                return (
-                  <tr key={p.id} className="border-t">
-                    <td className="px-3 py-2">{p.parkingDate}</td>
-                    <td className="px-3 py-2">{formatTime(p.parkingEntryTime)}</td>
-                    <td className="px-3 py-2">{renderAccountName(p)}</td>
-                    <td className="px-3 py-2 text-right">${uiAmount.toFixed(2)}</td>
-                    <td className="px-3 py-2 text-right space-x-2">
-                      <button
-                        onClick={() => handleExit(p)}
-                        className="px-3 py-1 rounded-full text-xs font-medium bg-black text-white"
-                      >
-                        Registrar salida
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+              {!loading &&
+                openParkings.map((p) => {
+                  const uiAmount = computeLiveAmount(p);
+                  return (
+                    <tr key={p.id} className="hover:bg-neutral-50">
+                      <td className="py-3 px-3">{p.parkingDate}</td>
+                      <td className="py-3 px-3">{formatTime(p.parkingEntryTime)}</td>
+                      <td className="py-3 px-3">{renderAccountName(p)}</td>
+                      <td className="py-3 px-3 text-right font-semibold">${uiAmount.toFixed(2)}</td>
+                      <td className="py-3 px-3">
+                        <div className="flex justify-end">
+                          <PillButton
+                            onClick={() => handleExit(p)}
+                            type="button"
+                            className="bg-neutral-900 text-white hover:bg-neutral-800"
+                          >
+                            Registrar salida
+                          </PillButton>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
             </tbody>
           </table>
         </div>
-      </section>
+      </div>
 
       {/* Historial */}
-      <section className="bg-white rounded-xl shadow p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Historial</h2>
-
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-gray-500">{closedParkings.length} registros</span>
-
-            {closedParkings.length > 0 && (
-              <button
-                onClick={handleClearHistory}
-                className="px-3 py-1 rounded-full text-xs font-medium border text-red-600 hover:bg-red-50"
-              >
-                Limpiar historial
-              </button>
-            )}
+      <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between">
+          <div className="font-semibold">Historial</div>
+          <div className="flex items-center gap-2">
+            <Chip variant="neutral">{closedParkings.length} registros</Chip>
           </div>
         </div>
 
-        <div className="border rounded-lg overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="text-left px-3 py-2">Fecha</th>
-                <th className="text-left px-3 py-2">Ingreso</th>
-                <th className="text-left px-3 py-2">Salida</th>
-                <th className="text-left px-3 py-2">Cuenta</th>
-                <th className="text-right px-3 py-2">Monto</th>
-                <th className="text-right px-3 py-2">Acciones</th>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[980px]">
+            <thead className="bg-neutral-50">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                <th className="py-3 px-3">Fecha</th>
+                <th className="py-3 px-3">Ingreso</th>
+                <th className="py-3 px-3">Salida</th>
+                <th className="py-3 px-3">Cuenta</th>
+                <th className="py-3 px-3 text-right">Monto</th>
+                <th className="py-3 px-3 text-right">Acciones</th>
               </tr>
             </thead>
 
-            <tbody>
+            <tbody className="[&>tr]:border-t [&>tr]:border-neutral-200">
               {closedParkings.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-3 py-4 text-center text-gray-500">
+                  <td colSpan={6} className="py-10 px-3 text-center text-neutral-500">
                     Aún no hay historial.
                   </td>
                 </tr>
               )}
 
               {closedParkings.map((p) => {
-                // Si backend trae total, úsalo (más confiable). Si no, fallback.
                 const backendTotal = Number((p as any).total);
-                const uiAmount = Number.isFinite(backendTotal) ? backendTotal : computeClosedAmountFallback(p);
+                const uiAmount = Number.isFinite(backendTotal)
+                  ? backendTotal
+                  : computeClosedAmountFallback(p);
 
                 return (
-                  <tr key={p.id} className="border-t">
-                    <td className="px-3 py-2">{p.parkingDate}</td>
-                    <td className="px-3 py-2">{formatTime(p.parkingEntryTime)}</td>
-                    <td className="px-3 py-2">{formatTime(p.parkingExitTime ?? null)}</td>
-                    <td className="px-3 py-2">{renderAccountName(p)}</td>
-                    <td className="px-3 py-2 text-right">${uiAmount.toFixed(2)}</td>
-                    <td className="px-3 py-2 text-right">
-                      <button
-                        onClick={() => handleDelete(p)}
-                        disabled={!!deletingIds[p.id]}
-                        className="px-3 py-1 rounded-full text-xs font-medium border text-red-600 hover:bg-red-50 disabled:opacity-60"
-                      >
-                        {deletingIds[p.id] ? "Eliminando…" : "Eliminar"}
-                      </button>
+                  <tr key={p.id} className="hover:bg-neutral-50">
+                    <td className="py-3 px-3">{p.parkingDate}</td>
+                    <td className="py-3 px-3">{formatTime(p.parkingEntryTime)}</td>
+                    <td className="py-3 px-3">{formatTime(p.parkingExitTime ?? null)}</td>
+                    <td className="py-3 px-3">{renderAccountName(p)}</td>
+                    <td className="py-3 px-3 text-right font-semibold">${uiAmount.toFixed(2)}</td>
+                    <td className="py-3 px-3">
+                      <div className="flex justify-end">
+                        <PillButton
+                          onClick={() => handleDelete(p)}
+                          type="button"
+                          disabled={!!deletingIds[p.id]}
+                          className="border border-neutral-200 bg-white text-rose-700 hover:bg-rose-50"
+                        >
+                          {deletingIds[p.id] ? "Eliminando…" : "Eliminar"}
+                        </PillButton>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -421,7 +520,7 @@ export default function ParkingPage() {
             </tbody>
           </table>
         </div>
-      </section>
+      </div>
     </div>
   );
 }

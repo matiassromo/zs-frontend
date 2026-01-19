@@ -4,7 +4,11 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { createClient, updateClient, UpsertClientInput } from "@/lib/api/clients";
+import {
+  createClient,
+  updateClient,
+  UpsertClientInput,
+} from "@/lib/api/clients";
 import Swal from "sweetalert2";
 import { confirm, toast } from "@/lib/ui/swal";
 
@@ -78,7 +82,9 @@ function validateNationalIdEC(value: string): { ok: boolean; msg?: string } {
     return { ok: false, msg: "Debe tener 10 (cédula) o 13 (RUC) dígitos" };
 
   if (v.length === 10) {
-    return validateCedulaEC(v) ? { ok: true } : { ok: false, msg: "Cédula inválida" };
+    return validateCedulaEC(v)
+      ? { ok: true }
+      : { ok: false, msg: "Cédula inválida" };
   }
 
   return validateRucEC(v) ? { ok: true } : { ok: false, msg: "RUC inválido" };
@@ -102,7 +108,10 @@ const schema = z.object({
     }),
   name: z.string().min(1, "Nombre obligatorio").max(50, "Máx 50 caracteres"),
   email: z.string().email("Correo inválido"),
-  address: z.string().min(1, "Dirección obligatoria").max(300, "Máx 300 caracteres"),
+  address: z
+    .string()
+    .min(1, "Dirección obligatoria")
+    .max(300, "Máx 300 caracteres"),
   number: z
     .string()
     .min(10, "Teléfono 10 dígitos")
@@ -204,13 +213,16 @@ export default function ClientForm({
     }
   };
 
+  // ✅ estilo POS
   const inputCls =
-    "w-full rounded-2xl border border-neutral-300 bg-white px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500";
-  const labelCls = "block text-sm font-medium mb-1";
-  const errCls = "text-sm text-red-600 mt-1";
+    "w-full rounded-xl border border-neutral-200 bg-white px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-neutral-200";
+  const labelCls =
+    "block text-xs font-semibold uppercase tracking-wide text-neutral-500 mb-1";
+  const errCls = "text-xs text-rose-700 mt-1";
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+  <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+    <div className="grid gap-4 sm:grid-cols-2">
       {/* Cédula / RUC */}
       <div>
         <label className={labelCls}>Cédula / RUC</label>
@@ -222,7 +234,23 @@ export default function ClientForm({
           placeholder="1724567890 o 1724567890001"
           {...register("nationalId")}
         />
-        {errors.nationalId && <p className={errCls}>{errors.nationalId.message}</p>}
+        {errors.nationalId && (
+          <p className={errCls}>{errors.nationalId.message}</p>
+        )}
+      </div>
+
+      {/* Teléfono */}
+      <div>
+        <label className={labelCls}>Número / Teléfono</label>
+        <input
+          type="text"
+          inputMode="numeric"
+          maxLength={10}
+          className={inputCls}
+          placeholder="0991234567"
+          {...register("number")}
+        />
+        {errors.number && <p className={errCls}>{errors.number.message}</p>}
       </div>
 
       {/* Nombre */}
@@ -251,7 +279,7 @@ export default function ClientForm({
       </div>
 
       {/* Dirección */}
-      <div>
+      <div className="sm:col-span-2">
         <label className={labelCls}>Dirección</label>
         <textarea
           rows={3}
@@ -260,49 +288,39 @@ export default function ClientForm({
           placeholder="Av. La Prensa y Eloy Alfaro, Quito"
           {...register("address")}
         />
-        {errors.address && <p className={errCls}>{errors.address.message}</p>}
+        {errors.address && (
+          <p className={errCls}>{errors.address.message}</p>
+        )}
       </div>
+    </div>
 
-      {/* Teléfono */}
-      <div>
-        <label className={labelCls}>Número / Teléfono</label>
-        <input
-          type="text"
-          inputMode="numeric"
-          maxLength={10}
-          className={inputCls}
-          placeholder="0991234567"
-          {...register("number")}
-        />
-        {errors.number && <p className={errCls}>{errors.number.message}</p>}
-      </div>
+    {/* Botones */}
+    <div className="flex flex-wrap gap-2 pt-4">
+      <button
+        type="submit"
+        disabled={isSubmitting}
+        className="inline-flex items-center justify-center rounded-full bg-neutral-900 px-4 py-2 text-sm font-semibold text-white hover:bg-neutral-800 disabled:opacity-50"
+      >
+        {isSubmitting ? "Guardando…" : "Guardar"}
+      </button>
 
-      {/* Botones */}
-      <div className="flex flex-wrap gap-3 pt-2">
-        <button
-          type="submit"
-          disabled={isSubmitting}
-          className="rounded-full px-5 py-2.5 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 shadow-sm"
-        >
-          Guardar Cliente
-        </button>
+      <button
+        type="button"
+        onClick={() => reset()}
+        className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-50"
+      >
+        Limpiar
+      </button>
 
-        <button
-          type="button"
-          onClick={() => reset()}
-          className="rounded-full border border-neutral-300 bg-white px-5 py-2.5 hover:bg-neutral-50"
-        >
-          Limpiar Campos
-        </button>
+      <button
+        type="button"
+        onClick={() => router.push("/clientes")}
+        className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-50"
+      >
+        Volver
+      </button>
+    </div>
+  </form>
+);
 
-        <button
-          type="button"
-          onClick={() => router.push("/clientes")}
-          className="rounded-full border border-neutral-300 bg-white px-5 py-2.5 hover:bg-neutral-50"
-        >
-          Volver
-        </button>
-      </div>
-    </form>
-  );
 }

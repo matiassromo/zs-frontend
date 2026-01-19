@@ -9,7 +9,6 @@ import { addCharge, updateAccount, deleteCharge, listCharges } from "@/lib/api/a
 import {
   findAccessCardByHolder,
   createAccessCardForHolder,
-  consumeAccessCardByHolder,
   updateAccessCard,
 } from "@/lib/apiv2/accessCards";
 
@@ -386,14 +385,16 @@ export default function EditAccountModal({
 
         const found = await findAccessCardByHolder(holder);
 
-        if (!found?.card?.id) {
-          await createAccessCardForHolder(holder, 10);
+        let cardIdToUse: string | null = found?.card?.id ?? null;
+
+        if (!cardIdToUse) {
+          const created = await createAccessCardForHolder(holder, 10);
+          cardIdToUse = (created as any)?.card?.id ?? null;
           willChargeSale = true;
         } else {
           const remaining = remainingFromFound(found);
           if (remaining < passCount) {
-            // renovar a 10 disponibles
-            await updateAccessCard(found.card.id, {
+            await updateAccessCard(cardIdToUse, {
               holderName: holder,
               total: 10,
               uses: 10,
@@ -402,6 +403,7 @@ export default function EditAccountModal({
             willChargeSale = true;
           }
         }
+
 
         if (willChargeSale) {
           await addCharge(accountId, {
@@ -412,7 +414,22 @@ export default function EditAccountModal({
           });
         }
 
-        await consumeAccessCardByHolder(holder, passCount);
+
+        if (cardIdToUse) {
+          const now = new Date();
+          await fetch("/api/EntranceAccessCards", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              accessCardId: cardIdToUse,
+              entranceDate: now.toISOString().slice(0, 10),
+              entranceEntryTime: now.toTimeString().slice(0, 8),
+              qty: passCount, // <- NUEVO
+            }),
+          });
+        }
+
+
 
         await addCharge(accountId, {
           kind: "Normal",

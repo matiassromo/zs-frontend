@@ -1,3 +1,4 @@
+// src/app/clientes/[id]/editar/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -25,18 +26,26 @@ export default function EditarClientePage() {
 
   if (!defaults) {
     return (
-      <div className="rounded-2xl border border-neutral-200 bg-white p-6 text-neutral-500">
-        Cargando…
+      <div className="p-6">
+        <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm p-6 text-sm text-neutral-500">
+          Cargando…
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-3xl font-semibold">Editar Cliente</h1>
+    <div className="p-6 space-y-4">
+      <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-200">
+          <div className="text-sm font-semibold text-neutral-900">
+            Editar cliente
+          </div>
+        </div>
 
-      <div className="rounded-2xl border border-neutral-200 bg-white p-6">
-        <ClientForm mode="edit" id={id} defaultValues={defaults} />
+        <div className="p-4">
+          <ClientForm mode="edit" id={id} defaultValues={defaults} />
+        </div>
       </div>
     </div>
   );
