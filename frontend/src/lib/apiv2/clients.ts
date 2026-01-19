@@ -2,9 +2,10 @@ import { Client, ClientRequestDto } from "@/types/client";
 import { http } from "./http";
 
 
-export async function listClients(): Promise<Client[]> {
-  const dtos = await http<any[]>(`/api/Clients`);
-  return dtos.map(normalize);
+export async function listClients(search?: string): Promise<Client[]> {
+  const query = search ? `?search=${encodeURIComponent(search)}` : "";
+  const dtos = await http<any[]>(`/api/Clients${query}`);
+  return (dtos ?? []).map(normalize);
 }
 
 export async function getClient(id: string): Promise<Client | null> {

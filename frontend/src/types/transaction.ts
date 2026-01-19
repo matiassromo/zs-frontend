@@ -1,15 +1,28 @@
 import { Client } from "./client"
 import { Payment } from "./payment";
+import { TransactionItemDto } from "./transactionItem";
 
 /**
- * Transaction entity represents a transaction record linking a client to a transaction item (parking, accessCard, barOrder, entranceTransaction) and optionally a payment
+ * Transaction status enum matching backend
+ */
+export enum TransactionStatus {
+  Open = 0,
+  Closed = 1
+}
+
+/**
+ * Transaction entity represents a transaction record linking a client to transaction items and payments
  */
 export interface Transaction {
   id: string;
-  createdAt: string;
+  openedAt: string;
+  closedAt?: string | null;
+  status: TransactionStatus;
+  clientId: string;
+  cashBoxId: string;
   client: Client;
-  transactionItem: any;
-  payment: Payment;
+  transactionItems: TransactionItemDto[];
+  payments: Payment[];
 }
 
 /**

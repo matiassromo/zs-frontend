@@ -42,7 +42,7 @@ async function run() {
       console.log('\n4) updateKey() - toggle availability');
       const originalAvailability = firstKey.available;
       const updated = await keys.updateKey(firstKey.id, {
-        lastAssignedTo: firstKey.lastAssignedClient?.id,
+        lastAssignedTo: firstKey.lastAssignedTo,
         available: !originalAvailability,
         notes: `Updated at ${new Date().toISOString()}`,
       });
@@ -66,12 +66,12 @@ async function run() {
 
       console.log('\n6) listKeys() - verify update in list');
       const allAfterUpdate = await keys.listKeys();
-      const updatedInList = allAfterUpdate.find(k => k.id === firstKey.id);
+      const updatedInList = allAfterUpdate.find((k: { id: string }) => k.id === firstKey.id);
       console.log('Updated key in list ->', updatedInList);
 
       console.log('\n7) updateKey() - restore original state');
       const restored = await keys.updateKey(firstKey.id, {
-        lastAssignedTo: firstKey.lastAssignedClient?.id,
+        lastAssignedTo: firstKey.lastAssignedTo,
         available: originalAvailability,
         notes: firstKey.notes,
       });

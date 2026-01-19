@@ -307,9 +307,9 @@ export default function TransactionMappingModal({
                 </p>
                 <p className="text-emerald-700 text-xs">
                   Fecha:{" "}
-                  {validationResult.transaction.createdAt
+                  {validationResult.transaction.openedAt
                     ? new Date(
-                        validationResult.transaction.createdAt
+                        validationResult.transaction.openedAt
                       ).toLocaleDateString("es-EC")
                     : "N/A"}
                 </p>

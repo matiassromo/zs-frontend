@@ -7,6 +7,16 @@ export async function listKeys(): Promise<Key[]> {
   return (dtos ?? []).map(normalize);
 }
 
+export async function getKeyById(id: string): Promise<Key | null> {
+  try {
+    const dto = await http<any>(`/api/Keys/${id}`);
+    return dto ? normalize(dto) : null;
+  } catch (err: any) {
+    if (err?.status === 404) return null;
+    throw err;
+  }
+}
+
 export async function updateKey(id: string, input: KeyRequestDto): Promise<Key> {
   const payload = {
     Available: input.available,
@@ -41,15 +51,20 @@ function normalize(dto: any): Key {
 
   return {
     id: dto.id ?? dto.Id,
+    keyCode: dto.keyCode ?? dto.KeyCode ?? "",
     available: dto.available ?? dto.Available ?? false,
     notes: dto.notes ?? dto.Notes ?? null,
+    lastAssignedTo: dto.lastAssignedTo ?? dto.LastAssignedTo ?? null,
     lastAssignedClient:
       dto.lastAssignedClient?.name ??
       dto.LastAssignedClient?.name ??
       null,
-
-    lastAssignedAt: ensureTz(rawLastAssignedAt), // ✅
+    lastAssignedAt: ensureTz(rawLastAssignedAt),
   };
 }
 
-
+export default {
+  listKeys,
+  getKeyById,
+  updateKey,
+};

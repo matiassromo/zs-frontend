@@ -1,3 +1,60 @@
+// ================================
+// Backend CashBox API Types
+// ================================
+
+/**
+ * CashBox status enum matching backend
+ */
+export enum CashBoxStatus {
+  Open = 0,
+  Closed = 1
+}
+
+/**
+ * CashBox DTO from backend API
+ */
+export interface CashBoxDto {
+  id: string;
+  status: CashBoxStatus;
+  openedAt: string;
+  closedAt?: string | null;
+  openingBalance: number;
+  closingBalance?: number | null;
+}
+
+/**
+ * Request DTO for opening a new cashbox
+ */
+export interface OpenCashBoxRequestDto {
+  openingBalance: number;
+}
+
+/**
+ * Request DTO for closing a cashbox
+ */
+export interface CloseCashBoxRequestDto {
+  closingBalance?: number | null;
+  notes?: string | null;
+}
+
+/**
+ * CashBox summary DTO from backend API
+ */
+export interface CashBoxSummaryDto {
+  cashBox: CashBoxDto;
+  totalCharges: number;
+  totalPayments: number;
+  cash: number;
+  transfer: number;
+  openTransactions: number;
+  closedTransactions: number;
+}
+
+// ================================
+// Legacy Local Storage Types
+// (kept for backward compatibility during migration)
+// ================================
+
 export type CashboxStatus = "Abierta" | "Cerrada";
 
 export type CashMoveType = "Ingreso" | "Egreso";
