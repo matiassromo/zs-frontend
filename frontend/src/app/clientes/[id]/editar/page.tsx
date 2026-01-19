@@ -14,13 +14,14 @@ export default function EditarClientePage() {
     (async () => {
       const c = await getClient(id);
       if (!c) return;
-      setDefaults({
-        nationalId: c.nationalId,
-        name: c.name,
-        email: c.email,
-        address: c.address,
-        number: c.number,
-      });
+    setDefaults({
+      idType: "cedula", // no tienes cómo inferirlo si guardas solo 10 en backend
+      nationalId: c.nationalId,
+      name: c.name,
+      email: c.email,
+      address: c.address,
+      number: c.number,
+    });
     })();
   }, [id]);
 

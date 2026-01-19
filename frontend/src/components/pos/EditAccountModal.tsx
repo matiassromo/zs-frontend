@@ -6,6 +6,10 @@ import { confirm, fire } from "@/lib/ui/swal";
 import type { PosAccount } from "@/lib/api/accounts";
 import { addCharge, updateAccount, deleteCharge, listCharges } from "@/lib/api/accounts";
 
+import { createParking, deleteParking, listParkings } from "@/lib/apiv2/parkings";
+import type { ParkingRequestDto } from "@/types/parking";
+
+
 import {
   findAccessCardByHolder,
   createAccessCardForHolder,
@@ -15,6 +19,32 @@ import {
 import { listKeys, updateKey } from "@/lib/apiv2/keys";
 import type { Key } from "@/types/key";
 import type { SelectedKey, KeyGender } from "@/types/pos";
+
+// ------------------ helpers localStorage map (accountId -> parkingId) ------------------
+const ACCOUNT_PARKING_MAP_KEY = "zs:parking:accountParkingMap";
+
+function readAccountParkingMap(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(window.localStorage.getItem(ACCOUNT_PARKING_MAP_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function writeAccountParkingMap(next: Record<string, string>) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(ACCOUNT_PARKING_MAP_KEY, JSON.stringify(next));
+}
+
+// ✅ GUID válido y NO vacío
+function isNonEmptyGuid(v: any): v is string {
+  if (typeof v !== "string") return false;
+  const s = v.trim().toLowerCase();
+  if (s === "00000000-0000-0000-0000-000000000000") return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(s);
+}
+
 
 type Counts = { A: number; N: number; TE: number; D: number; AC: number };
 
@@ -142,12 +172,60 @@ export default function EditAccountModal({
   const [selectedKeys, setSelectedKeys] = useState<SelectedKey[]>([]);
   const [initialKeys, setInitialKeys] = useState<SelectedKey[]>([]);
 
-  // reset cuando cambia la cuenta
+  const [requiresParking, setRequiresParking] = useState(false);
+  const [initialRequiresParking, setInitialRequiresParking] = useState(false);
+  const [initialParkingId, setInitialParkingId] = useState<string | null>(null);
+
   useEffect(() => {
-    setCounts(initialCounts);
-    setUseCard(false);
-    setPassCount(0);
-  }, [initialCounts]);
+  setCounts(initialCounts);
+  setUseCard(false);
+  setPassCount(0);
+
+  // reset parking (se hidrata en efecto aparte)
+  setRequiresParking(false);
+  setInitialRequiresParking(false);
+  setInitialParkingId(null);
+}, [initialCounts]);
+
+useEffect(() => {
+  if (!open) return;
+
+  (async () => {
+    // 1) preferir vínculo guardado por CreateAccountModal
+    const ap = readAccountParkingMap();
+    const pid = ap[String(account.id)] || null;
+
+    if (pid) {
+      setRequiresParking(true);
+      setInitialRequiresParking(true);
+      setInitialParkingId(pid);
+      return;
+    }
+
+    // 2) fallback opcional: buscar en backend por transactionId == account.id
+    // (si listParkings existe)
+    try {
+      const all = await listParkings();
+      const found = (all ?? []).find((p: any) => String(p.transactionId ?? "") === String(account.id));
+      if (found?.id) {
+        setRequiresParking(true);
+        setInitialRequiresParking(true);
+        setInitialParkingId(String(found.id));
+
+        const next = readAccountParkingMap();
+        next[String(account.id)] = String(found.id);
+        writeAccountParkingMap(next);
+        return;
+      }
+    } catch {}
+
+    setRequiresParking(false);
+    setInitialRequiresParking(false);
+    setInitialParkingId(null);
+  })();
+}, [open, account.id]);
+
+
 
   // ✅ REGLA: el modal SIEMPRE reconstruye llaves desde backend real (keys + notes),
   // así se sincroniza después de liberar en /llaves.
@@ -375,6 +453,101 @@ export default function EditAccountModal({
         peopleCount: totalPeople,
         counts: { ...counts },
       });
+      // 5) parqueadero: crear o eliminar (según check)
+      // - si estaba marcado y lo desmarcan: elimina registro + quita cargo pendiente
+      // - si no estaba y lo marcan: crea registro + añade cargo en curso
+
+      const accountIdStr = String(account.id);
+      const apMap = readAccountParkingMap();
+      let parkingId: string | null = initialParkingId ?? apMap[accountIdStr] ?? null;
+
+
+      // helper: borrar cargos de parqueadero pendientes
+      async function removeParkingCharges() {
+        const current = await listCharges(accountIdStr);
+        const toDel = current.filter(
+          (c) =>
+            c.kind === "Normal" &&
+            c.status !== "Pagado" &&
+            String(c.concept ?? "").toLowerCase().includes("parqueadero")
+        );
+        for (const c of toDel) await deleteCharge(accountIdStr, c.id);
+      }
+
+      if (initialRequiresParking && !requiresParking) {
+        // cancelar parqueo
+        if (parkingId) {
+          try {
+            await deleteParking(parkingId);
+          } catch {}
+        }
+
+        await removeParkingCharges();
+
+        // limpiar maps
+        const next = readAccountParkingMap();
+        delete next[accountIdStr];
+        writeAccountParkingMap(next);
+
+        parkingId = null;
+        setInitialParkingId(null);
+        setInitialRequiresParking(false);
+
+        try {
+          window.dispatchEvent(new CustomEvent("zs:parking-changed", { detail: { accountId: accountIdStr } }));
+        } catch {}
+      }
+
+      if (!initialRequiresParking && requiresParking) {
+        // crear parqueo
+        const now = new Date();
+        const parkingDate = now.toISOString().slice(0, 10);
+        const parkingEntryTime = now.toTimeString().slice(0, 8);
+
+        const tx = isNonEmptyGuid(accountIdStr) ? accountIdStr : null;
+
+        const parkingInput: ParkingRequestDto = {
+          parkingDate,
+          parkingEntryTime,
+          parkingExitTime: null,
+          transactionId: tx,
+        };
+
+        const created = await createParking(parkingInput);
+        parkingId = String((created as any)?.id);
+
+        // guardar vínculo
+        const next = readAccountParkingMap();
+        next[accountIdStr] = parkingId;
+        writeAccountParkingMap(next);
+
+        // asegurar cargo "en curso" (sin duplicar)
+        const current = await listCharges(accountIdStr);
+        const exists = current.some(
+          (c) =>
+            c.kind === "Normal" &&
+            c.status !== "Pagado" &&
+            String(c.concept ?? "").toLowerCase().includes("parqueadero (en curso)")
+        );
+
+        if (!exists) {
+          await addCharge(accountIdStr, {
+            kind: "Normal",
+            concept: "Parqueadero (en curso)",
+            qty: 1,
+            amount: 0,
+          });
+        }
+
+        setInitialParkingId(parkingId);
+        setInitialRequiresParking(true);
+
+        try {
+          window.dispatchEvent(new CustomEvent("zs:parking-changed", { detail: { accountId: accountIdStr } }));
+        } catch {}
+      }
+
+      
 
       // 4) tarjeta 10 pases (AHORA: crea o renueva + cobra si hace falta)
       if (useCard && passCount > 0) {
@@ -457,191 +630,234 @@ export default function EditAccountModal({
       });
     }
   }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-3xl rounded-2xl bg-white shadow-xl overflow-hidden">
-        <div className="flex items-center justify-between border-b px-5 py-4">
-          <div>
-            <div className="text-lg font-semibold">Editar cuenta</div>
-            <div className="text-sm text-neutral-500">
-              Cuenta: <span className="font-medium text-neutral-900">{account.clientName}</span>
-            </div>
+ return (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <div className="w-full max-w-3xl rounded-2xl bg-white shadow-xl overflow-hidden">
+      <div className="flex items-center justify-between border-b px-5 py-4">
+        <div>
+          <div className="text-lg font-semibold">Editar cuenta</div>
+          <div className="text-sm text-neutral-500">
+            Cuenta: <span className="font-medium text-neutral-900">{account.clientName}</span>
           </div>
-
-          <button className="rounded-lg px-3 py-1 text-sm hover:bg-neutral-100" onClick={() => onOpenChange(false)}>
-            Cerrar
-          </button>
         </div>
 
-        {!posEnabled && (
-          <div className="px-5 pt-4">
-            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
-              {posReason ?? "POS cerrado para este día."}
-            </div>
+        <button
+          className="rounded-lg px-3 py-1 text-sm hover:bg-neutral-100"
+          onClick={() => onOpenChange(false)}
+        >
+          Cerrar
+        </button>
+      </div>
+
+      {!posEnabled && (
+        <div className="px-5 pt-4">
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+            {posReason ?? "POS cerrado para este día."}
           </div>
-        )}
+        </div>
+      )}
 
-        <div className="space-y-6 px-5 py-5">
-          <div className="rounded-2xl border border-neutral-200 p-4">
-            <div className="mb-3 text-sm font-semibold">Entradas (normal)</div>
+      {/* ✅ CONTENIDO */}
+      <div className="space-y-6 px-5 py-5">
+        {/* ENTRADAS */}
+        <div className="rounded-2xl border border-neutral-200 p-4">
+          <div className="mb-3 text-sm font-semibold">Entradas (normal)</div>
 
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
-              {(["A", "N", "TE", "D", "AC"] as (keyof Counts)[]).map((k) => {
-                const price = PRICES[k];
-                const qty = counts[k];
-                const subtotal = qty * price;
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+            {(["A", "N", "TE", "D", "AC"] as (keyof Counts)[]).map((k) => {
+              const price = PRICES[k];
+              const qty = counts[k];
+              const subtotal = qty * price;
 
-                return (
-                  <div key={k} className="rounded-2xl border border-neutral-200 p-3">
-                    <div className="text-sm font-medium">{keyLabel(k)}</div>
-                    <div className="text-xs text-neutral-500">Precio: ${price.toFixed(2)}</div>
+              return (
+                <div key={k} className="rounded-2xl border border-neutral-200 p-3">
+                  <div className="text-sm font-medium">{keyLabel(k)}</div>
+                  <div className="text-xs text-neutral-500">Precio: ${price.toFixed(2)}</div>
 
-                    <div className="mt-3 flex items-center gap-2">
-                      <button
-                        className="h-9 w-9 rounded-full border border-neutral-200 bg-white hover:bg-neutral-50"
-                        onClick={() => setCounts((s) => ({ ...s, [k]: Math.max(0, s[k] - 1) }))}
-                        type="button"
-                      >
-                        −
-                      </button>
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      className="h-9 w-9 rounded-full border border-neutral-200 bg-white hover:bg-neutral-50"
+                      onClick={() => setCounts((s) => ({ ...s, [k]: Math.max(0, s[k] - 1) }))}
+                      type="button"
+                    >
+                      −
+                    </button>
 
-                      <input
-                        className="h-9 w-14 rounded-xl border border-neutral-200 text-center text-sm"
-                        value={qty}
-                        onChange={(e) => setCounts((s) => ({ ...s, [k]: clampInt(e.target.value) }))}
-                      />
+                    <input
+                      className="h-9 w-14 rounded-xl border border-neutral-200 text-center text-sm"
+                      value={qty}
+                      onChange={(e) => setCounts((s) => ({ ...s, [k]: clampInt(e.target.value) }))}
+                    />
 
-                      <button
-                        className="h-9 w-9 rounded-full border border-neutral-200 bg-white hover:bg-neutral-50"
-                        onClick={() => setCounts((s) => ({ ...s, [k]: s[k] + 1 }))}
-                        type="button"
-                      >
-                        +
-                      </button>
-                    </div>
-
-                    <div className="mt-3 text-xs">
-                      Subtotal: <span className="font-semibold">${subtotal.toFixed(2)}</span>
-                    </div>
+                    <button
+                      className="h-9 w-9 rounded-full border border-neutral-200 bg-white hover:bg-neutral-50"
+                      onClick={() => setCounts((s) => ({ ...s, [k]: s[k] + 1 }))}
+                      type="button"
+                    >
+                      +
+                    </button>
                   </div>
-                );
-              })}
-            </div>
-          </div>
 
-          <div className="rounded-2xl border border-neutral-200 p-4">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-semibold">Tarjeta 10 pases</div>
-
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={useCard} onChange={(e) => setUseCard(e.target.checked)} />
-                Usar tarjeta en este grupo
-              </label>
-            </div>
-
-            <div className={"mt-3 text-sm text-neutral-500 " + (useCard ? "" : "opacity-70")}>
-              Activa esta sección si parte del grupo entra usando tarjeta (se puede combinar con entradas normales).
-            </div>
-
-            {useCard && (
-              <div className="mt-4 flex flex-wrap items-center gap-3">
-                <div className="text-sm">Pases a consumir:</div>
-                <input
-                  className="h-9 w-24 rounded-xl border border-neutral-200 px-3 text-sm"
-                  value={passCount}
-                  onChange={(e) => setPassCount(clampInt(e.target.value))}
-                />
-                <div className="text-xs text-neutral-500">
-                  Si la tarjeta no existe o no alcanza, se creará/renovará y se cobrará para <b>{account.clientName}</b>.
+                  <div className="mt-3 text-xs">
+                    Subtotal: <span className="font-semibold">${subtotal.toFixed(2)}</span>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
-
-          {/* LLAVES */}
-          <div className="rounded-2xl border border-neutral-200 p-4">
-            <div className="grid lg:grid-cols-3 gap-4">
-              <div>
-                <div className="text-sm font-medium">Género (para llaves)</div>
-                <select
-                  className="border border-neutral-200 rounded-xl px-3 py-2 w-full mt-2"
-                  value={keyGender}
-                  onChange={(e) => setKeyGender(e.target.value as KeyGender)}
-                >
-                  <option value="H">Hombres</option>
-                  <option value="M">Mujeres</option>
-                </select>
-              </div>
-
-              <div className="lg:col-span-2">
-                <div className="text-sm font-medium">Llaves disponibles ({keyGender})</div>
-
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {availableKeys.map((n) => {
-                    const active = selectedKeys.some((k) => k.number === n && k.gender === keyGender);
-
-                    return (
-                      <button
-                        key={`${keyGender}-${n}`}
-                        type="button"
-                        onClick={() =>
-                          setSelectedKeys((prev) =>
-                            active
-                              ? prev.filter((k) => !(k.number === n && k.gender === keyGender))
-                              : [...prev, { keyId: keyId(keyGender, n), number: n, gender: keyGender, duration: "1H" as any }]
-                          )
-                        }
-                        className={
-                          "px-3 py-2 rounded-full border text-sm font-semibold " +
-                          (active ? "bg-blue-600 text-white border-blue-600" : "bg-white border-neutral-200 hover:bg-neutral-50")
-                        }
-                      >
-                        {n}
-                      </button>
-                    );
-                  })}
-
-                  {availableKeys.length === 0 && <span className="text-sm text-neutral-500">No hay llaves libres</span>}
-                </div>
-              </div>
-            </div>
-
-            {selectedKeys.length > 0 && (
-              <div className="mt-4">
-                <div className="text-sm font-medium">Llaves seleccionadas</div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {selectedKeys
-                    .slice()
-                    .sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number)
-                    .map((k) => (
-                      <span key={k.keyId} className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-sm">
-                        {k.number}
-                        {k.gender}
-                        <button type="button" className="opacity-70 hover:opacity-100" onClick={() => setSelectedKeys((prev) => prev.filter((x) => x.keyId !== k.keyId))}>
-                          ✕
-                        </button>
-                      </span>
-                    ))}
-                </div>
-              </div>
-            )}
+              );
+            })}
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t px-5 py-4">
-          <button className="px-4 py-2 rounded-xl border border-neutral-200 hover:bg-neutral-50" onClick={() => onOpenChange(false)}>
-            Cancelar
-          </button>
-          <button
-            className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-60"
-            onClick={handleSave}
-            disabled={!posEnabled}
-          >
-            Aplicar
-          </button>
+        {/* TARJETA 10 PASES */}
+        <div className="rounded-2xl border border-neutral-200 p-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold">Tarjeta 10 pases</div>
+
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={useCard} onChange={(e) => setUseCard(e.target.checked)} />
+              Usar tarjeta en este grupo
+            </label>
+          </div>
+
+          <div className={"mt-3 text-sm text-neutral-500 " + (useCard ? "" : "opacity-70")}>
+            Activa esta sección si parte del grupo entra usando tarjeta (se puede combinar con entradas normales).
+          </div>
+
+          {useCard && (
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <div className="text-sm">Pases a consumir:</div>
+              <input
+                className="h-9 w-24 rounded-xl border border-neutral-200 px-3 text-sm"
+                value={passCount}
+                onChange={(e) => setPassCount(clampInt(e.target.value))}
+              />
+              <div className="text-xs text-neutral-500">
+                Si la tarjeta no existe o no alcanza, se creará/renovará y se cobrará para{" "}
+                <b>{account.clientName}</b>.
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* LLAVES + PARQUEADERO */}
+        <div className="rounded-2xl border border-neutral-200 p-4">
+          <div className="grid lg:grid-cols-3 gap-4">
+            <div>
+              <div className="text-sm font-medium">Género (para llaves)</div>
+              <select
+                className="border border-neutral-200 rounded-xl px-3 py-2 w-full mt-2"
+                value={keyGender}
+                onChange={(e) => setKeyGender(e.target.value as KeyGender)}
+              >
+                <option value="H">Hombres</option>
+                <option value="M">Mujeres</option>
+              </select>
+            </div>
+
+            <div className="lg:col-span-2">
+              <div className="text-sm font-medium">Llaves disponibles ({keyGender})</div>
+
+              <div className="mt-2 flex flex-wrap gap-2">
+                {availableKeys.map((n) => {
+                  const active = selectedKeys.some((k) => k.number === n && k.gender === keyGender);
+
+                  return (
+                    <button
+                      key={`${keyGender}-${n}`}
+                      type="button"
+                      onClick={() =>
+                        setSelectedKeys((prev) =>
+                          active
+                            ? prev.filter((k) => !(k.number === n && k.gender === keyGender))
+                            : [
+                                ...prev,
+                                { keyId: keyId(keyGender, n), number: n, gender: keyGender, duration: "1H" as any },
+                              ]
+                        )
+                      }
+                      className={
+                        "px-3 py-2 rounded-full border text-sm font-semibold " +
+                        (active
+                          ? "bg-blue-600 text-white border-blue-600"
+                          : "bg-white border-neutral-200 hover:bg-neutral-50")
+                      }
+                    >
+                      {n}
+                    </button>
+                  );
+                })}
+
+                {availableKeys.length === 0 && <span className="text-sm text-neutral-500">No hay llaves libres</span>}
+              </div>
+            </div>
+          </div>
+
+          {/* ✅ PARQUEADERO (EDIT) - FUERA DEL GRID */}
+          <div className="mt-4 rounded-xl border border-neutral-200 p-3">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                id="requiresParkingEdit"
+                type="checkbox"
+                className="h-4 w-4"
+                checked={requiresParking}
+                onChange={(e) => setRequiresParking(e.target.checked)}
+              />
+              Requiere parqueadero (0.50 la hora o fracción)
+            </label>
+
+            {initialRequiresParking && !requiresParking && (
+              <div className="mt-2 text-xs text-amber-700">
+                Se eliminará el registro de parqueadero y el cargo pendiente al aplicar.
+              </div>
+            )}
+          </div>
+
+          {selectedKeys.length > 0 && (
+            <div className="mt-4">
+              <div className="text-sm font-medium">Llaves seleccionadas</div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {selectedKeys
+                  .slice()
+                  .sort((a, b) => a.gender.localeCompare(b.gender) || a.number - b.number)
+                  .map((k) => (
+                    <span
+                      key={k.keyId}
+                      className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-sm"
+                    >
+                      {k.number}
+                      {k.gender}
+                      <button
+                        type="button"
+                        className="opacity-70 hover:opacity-100"
+                        onClick={() => setSelectedKeys((prev) => prev.filter((x) => x.keyId !== k.keyId))}
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* ✅ FOOTER (FUERA DEL CONTENIDO) */}
+      <div className="flex items-center justify-end gap-2 border-t px-5 py-4">
+        <button
+          className="px-4 py-2 rounded-xl border border-neutral-200 hover:bg-neutral-50"
+          onClick={() => onOpenChange(false)}
+        >
+          Cancelar
+        </button>
+        <button
+          className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-60"
+          onClick={handleSave}
+          disabled={!posEnabled}
+        >
+          Aplicar
+        </button>
+      </div>
     </div>
-  );
+  </div>
+);
+
 }
