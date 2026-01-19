@@ -543,9 +543,7 @@ export default function CreateAccountModal({
       }
 
 
-      if (selectedKeys.length) {
-        await reserveLockerKeys(selectedKeys, account.id, holder.id, holder.name);
-      }
+      // Note: Key assignment is now handled inside openAccount() via assignKey()
 
       // ✅ PARQUEADERO: crear registro y guardar hint de nombre para mostrarlo en /parqueadero
  // ✅ PARQUEADERO: crear registro y guardar hint de nombre para mostrarlo en /parqueadero

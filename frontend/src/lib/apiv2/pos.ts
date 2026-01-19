@@ -178,7 +178,7 @@ export async function openAccount(input: {
       if (key && key.available) {
         await assignKey(key.id, {
           visitorName: input.clientName,
-          transactionId: tx.id,
+          clientId: input.clientId,
           notes: `Cuenta ${tx.id.slice(0, 8)} - ${input.clientName}`,
         });
       }

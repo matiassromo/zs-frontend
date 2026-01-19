@@ -65,15 +65,15 @@ function normalize(dto: any): Key {
 }
 
 /**
- * Assigns a key to a visitor/transaction
+ * Assigns a key to a visitor/client
  */
 export async function assignKey(
   id: string,
-  params: { visitorName: string; transactionId?: string; notes?: string }
+  params: { visitorName: string; clientId?: string; notes?: string }
 ): Promise<Key> {
   return updateKey(id, {
     available: false,
-    lastAssignedTo: params.transactionId ?? null,
+    lastAssignedTo: params.clientId ?? null,
     lastAssignedAt: new Date().toISOString(),
     notes: params.notes ?? `Assigned to ${params.visitorName}`,
   });
