@@ -118,6 +118,24 @@ function normalizeStatus(status: any): TransactionStatus {
   return TransactionStatus.Open; // Default to Open
 }
 
+/**
+ * Lists all open transactions (status=Open)
+ * Used by POS to show today's active accounts
+ */
+export async function listOpenTransactions(): Promise<Transaction[]> {
+  const all = await listTransactions();
+  return all.filter(t => t.status === TransactionStatus.Open);
+}
+
+/**
+ * Lists transactions for today (by openedAt date)
+ */
+export async function listTodayTransactions(): Promise<Transaction[]> {
+  const all = await listTransactions();
+  const today = new Date().toISOString().slice(0, 10);
+  return all.filter(t => (t.openedAt ?? '').slice(0, 10) === today);
+}
+
 export default {
   listTransactions,
   getTransaction,
@@ -126,4 +144,6 @@ export default {
   deleteTransaction,
   closeTransaction,
   listTransactionsByCashBox,
+  listOpenTransactions,
+  listTodayTransactions,
 };

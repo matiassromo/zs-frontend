@@ -60,11 +60,64 @@ function normalize(dto: any): Key {
       dto.LastAssignedClient?.name ??
       null,
     lastAssignedAt: ensureTz(rawLastAssignedAt),
+    transactionId: dto.transactionId ?? dto.TransactionId ?? null,
   };
+}
+
+/**
+ * Assigns a key to a visitor/transaction
+ */
+export async function assignKey(
+  id: string,
+  params: { visitorName: string; transactionId?: string; notes?: string }
+): Promise<Key> {
+  return updateKey(id, {
+    available: false,
+    lastAssignedTo: params.transactionId ?? null,
+    lastAssignedAt: new Date().toISOString(),
+    notes: params.notes ?? `Assigned to ${params.visitorName}`,
+  });
+}
+
+/**
+ * Releases a key (marks as available)
+ */
+export async function releaseKey(id: string): Promise<Key> {
+  return updateKey(id, {
+    available: true,
+    lastAssignedTo: null,
+    notes: null,
+  });
+}
+
+/**
+ * Lists all available keys
+ */
+export async function listAvailableKeys(): Promise<Key[]> {
+  const all = await listKeys();
+  return all.filter(k => k.available);
+}
+
+/**
+ * Lists keys by gender zone (H = first 16, M = rest)
+ */
+export async function listAvailableKeysByGender(gender: "H" | "M"): Promise<Key[]> {
+  const all = await listKeys();
+  const sorted = [...all].sort((a, b) => a.id.localeCompare(b.id));
+
+  return sorted.filter((k, index) => {
+    if (!k.available) return false;
+    const keyGender = index < 16 ? "H" : "M";
+    return keyGender === gender;
+  });
 }
 
 export default {
   listKeys,
   getKeyById,
   updateKey,
+  assignKey,
+  releaseKey,
+  listAvailableKeys,
+  listAvailableKeysByGender,
 };

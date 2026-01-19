@@ -86,10 +86,21 @@ function normalize(dto: any): EntranceTransaction {
   } as EntranceTransaction;
 }
 
+/**
+ * Finds entrance transaction by parent transaction ID
+ */
+export async function getEntranceTransactionByTransactionId(
+  transactionId: string
+): Promise<EntranceTransaction | null> {
+  const all = await listEntranceTransactions();
+  return all.find(e => e.transactionId === transactionId) ?? null;
+}
+
 export default {
   listEntranceTransactions,
   getEntranceTransaction,
   createEntranceTransaction,
   updateEntranceTransaction,
   deleteEntranceTransaction,
+  getEntranceTransactionByTransactionId,
 };

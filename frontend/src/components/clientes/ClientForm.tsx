@@ -7,8 +7,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import {
   createClient,
   updateClient,
-  UpsertClientInput,
-} from "@/lib/api/clients";
+} from "@/lib/apiv2/clients";
+import type { ClientRequestDto } from "@/types/client";
 import Swal from "sweetalert2";
 import { confirm, toast } from "@/lib/ui/swal";
 
@@ -155,7 +155,7 @@ export default function ClientForm({
       const nid = data.nationalId.trim();
       const nationalIdForBackend = nid.length === 13 ? nid.slice(0, 10) : nid;
 
-      const payload: UpsertClientInput = {
+      const payload: ClientRequestDto = {
         ...data,
         nationalId: nationalIdForBackend,
       };

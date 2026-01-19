@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import ClientForm, { ClientFormValues } from "@/components/clientes/ClientForm";
-import { getClient } from "@/lib/api/clients";
+import { getClient } from "@/lib/apiv2/clients";
 
 export default function EditarClientePage() {
   const { id } = useParams<{ id: string }>();

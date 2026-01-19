@@ -6,6 +6,7 @@ export interface Key {
   lastAssignedTo?: string | null;
   lastAssignedClient: string | null;
   lastAssignedAt?: string | null;
+  transactionId?: string | null;
 }
 
 export interface KeyRequestDto {
@@ -13,4 +14,5 @@ export interface KeyRequestDto {
   notes?: string | null;
   lastAssignedTo?: string | null;
   lastAssignedAt?: string | null; // ISO
+  transactionId?: string | null;
 }

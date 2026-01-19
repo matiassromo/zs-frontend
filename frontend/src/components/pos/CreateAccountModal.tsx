@@ -2,9 +2,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { PRICES, openAccount, addCharge } from "@/lib/api/accounts";
+import { PRICES, openAccount } from "@/lib/apiv2/pos";
 
-import { listClients, createClient, UpsertClientInput } from "@/lib/api/clients";
+import { listClients, createClient } from "@/lib/apiv2/clients";
+import type { ClientRequestDto } from "@/types/client";
 import { Client } from "@/types/client";
 import { SelectedKey, KeyGender } from "@/types/pos";
 
@@ -317,7 +318,7 @@ export default function CreateAccountModal({
     const name = fallbackName.trim();
     if (!name) throw new Error("Ingresa un nombre de cliente.");
 
-    const input: UpsertClientInput = {
+    const input: ClientRequestDto = {
       nationalId: "",
       name,
       email: "",
@@ -516,17 +517,8 @@ export default function CreateAccountModal({
         createPassIfMissing: false,
       });
 
-      if (usePassCard && passPeople > 0 && willChargePassSale) {
-        await addCharge(account.id, {
-          kind: "Normal",
-          concept: "Tarjeta 10 pases (venta)",
-          qty: 1,
-          amount: PRICES.PASS,
-        });
-      }
-
       if (usePassCard && passPeople > 0) {
-        // ✅ usar el id real de tarjeta (del flujo previo: encontrada/creada/renovada)
+        // Use the card ID from the flow (found/created/renewed)
         const cardIdToUse =
           cardState.cardId ||
           (await findAccessCardByHolder(holderName))?.card?.id ||
@@ -534,6 +526,7 @@ export default function CreateAccountModal({
 
         if (cardIdToUse) {
           const now = new Date();
+          // Create entrance access card record (backend handles the charge)
           await fetch("/api/EntranceAccessCards", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -546,15 +539,7 @@ export default function CreateAccountModal({
           });
         }
 
-       setCardState((s) => ({ ...s, remaining: Math.max(0, (s.remaining ?? 0) - passPeople) }));
-
-
-        await addCharge(account.id, {
-          kind: "Normal",
-          concept: "Tarjeta 10 pases (uso)",
-          qty: passPeople,
-          amount: 0,
-        });
+        setCardState((s) => ({ ...s, remaining: Math.max(0, (s.remaining ?? 0) - passPeople) }));
       }
 
 
@@ -595,22 +580,14 @@ if (requiresParking) {
   ap[String(account.id)] = String(createdParking.id);
   writeAccountParkingMap(ap);
 
-  // ✅ hint nombre para /parqueadero
+  // Hint name for /parqueadero display
   const map = readParkingNameMap();
   map[String(createdParking.id)] = holder.name;
   const createdTx = createdParking.transactionId as string | null | undefined;
   if (isNonEmptyGuid(createdTx)) map[String(createdTx)] = holder.name;
   writeParkingNameMap(map);
 
-  // ✅ cargo inicial en POS
-  await addCharge(account.id, {
-    kind: "Normal",
-    concept: "Parqueadero (en curso)",
-    qty: 1,
-    amount: 0,
-  });
-
-  // ✅ refrescar pantallas
+  // Refresh screens
   try {
     window.dispatchEvent(
       new CustomEvent("zs:parking-changed", { detail: { accountId: String(account.id) } })

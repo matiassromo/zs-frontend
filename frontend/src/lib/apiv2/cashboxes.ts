@@ -4,12 +4,15 @@
 import { http } from "./http";
 import type {
   CashBoxDto,
-  CashBoxStatus,
   CashBoxSummaryDto,
   OpenCashBoxRequestDto,
   CloseCashBoxRequestDto,
 } from "@/types/cashbox";
+import { CashBoxStatus } from "@/types/cashbox";
 import type { Transaction } from "@/types/transaction";
+
+// Re-export for convenience
+export { CashBoxStatus };
 
 /**
  * Get today's cashbox (or for a specific date)
