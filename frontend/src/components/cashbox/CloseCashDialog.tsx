@@ -1,3 +1,4 @@
+// src/components/cashbox/CloseCashDialog.tsx
 "use client";
 
 import React from "react";
@@ -12,17 +13,19 @@ export function CloseCashDialog({
   open: boolean;
   totals: CashboxTotals;
   onClose: () => void;
-  onSubmit: (data: { countedCash: number; closedBy: string; note?: string }) => void;
+  onSubmit: (data: { countedCash: number; closedBy: string; note?: string; printReport: boolean }) => void;
 }) {
   const [counted, setCounted] = React.useState<string>("");
   const [closedBy, setClosedBy] = React.useState<string>("operador");
   const [note, setNote] = React.useState<string>("");
+  const [printReport, setPrintReport] = React.useState<boolean>(true);
 
   React.useEffect(() => {
     if (open) {
       setCounted(String(totals.theoretical.toFixed(2)));
       setClosedBy("operador");
       setNote("");
+      setPrintReport(true);
     }
   }, [open, totals.theoretical]);
 
@@ -91,6 +94,11 @@ export function CloseCashDialog({
               placeholder="Ej: faltante por cambio"
             />
           </label>
+
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={printReport} onChange={(e) => setPrintReport(e.target.checked)} />
+            Imprimir reporte al cerrar
+          </label>
         </div>
 
         <div className="p-5 border-t flex gap-2 justify-end">
@@ -99,7 +107,7 @@ export function CloseCashDialog({
           </button>
           <button
             className="px-4 py-2 rounded-xl bg-slate-900 text-white"
-            onClick={() => onSubmit({ countedCash: Number(counted), closedBy, note })}
+            onClick={() => onSubmit({ countedCash: Number(counted), closedBy, note, printReport })}
           >
             Cerrar
           </button>

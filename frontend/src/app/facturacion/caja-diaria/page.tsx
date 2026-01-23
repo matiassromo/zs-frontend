@@ -15,20 +15,23 @@ import {
   mergeMoves,
   calcTotals,
   listCashboxDates,
+  buildCashboxReport,
+  saveCashboxReport,
+  getCashboxReport,
+  printCashboxReport,
 } from "@/lib/apiv2/cashbox";
 
 import { OpenCashDialog } from "@/components/cashbox/OpenCashDialog";
 import { MoveDialog } from "@/components/cashbox/MoveDialog";
 import { CloseCashDialog } from "@/components/cashbox/CloseCashDialog";
+import { CashboxReportModal } from "@/components/cashbox/CashBoxReportModal";
+
 
 function money(n: number) {
   return `$${n.toFixed(2)}`;
 }
 
-/* ----------------- POS LOCK (por fecha) -----------------
-   - Cerrar caja => locked=1 (POS bloqueado)
-   - Reabrir (solo si es HOY) => locked=0 (POS desbloqueado)
----------------------------------------------------------- */
+/* ----------------- POS LOCK (por fecha) ----------------- */
 const lockKey = (dateKey: string) => `zs:cashbox:locked:${dateKey}`;
 function isLocked(dateKey: string) {
   if (typeof window === "undefined") return false;
@@ -63,6 +66,9 @@ export default function CajaDiariaPage() {
   const [historyDates, setHistoryDates] = React.useState<string[]>([]);
   const [locked, setLockedState] = React.useState(false);
 
+  // ✅ para evitar hydration mismatch: se setea SOLO en refresh() (cliente)
+  const [hasSavedReport, setHasSavedReport] = React.useState(false);
+
   const refresh = React.useCallback(async () => {
     const cb = getCashboxByDate(dateKey);
     setCashbox(cb);
@@ -74,6 +80,9 @@ export default function CajaDiariaPage() {
 
     const lk = isLocked(dateKey);
     setLockedState(lk);
+
+    // ✅ NO en render: leer localStorage solo aquí
+    setHasSavedReport(!!getCashboxReport(dateKey));
 
     if (!cb) {
       setPaymentMoves([]);
@@ -98,7 +107,6 @@ export default function CajaDiariaPage() {
     refresh();
   }, [refresh]);
 
-  // ✅ cuando POS registra pagos o caja cambia, refrescar (para reflejar ingresos del POS)
   React.useEffect(() => {
     function onCashboxChanged(e: any) {
       const dk = e?.detail?.dateKey;
@@ -119,14 +127,43 @@ export default function CajaDiariaPage() {
   const isOpen = cashbox?.status === "Abierta";
   const today = isTodayKey(dateKey);
 
-  // ✅ Reglas según tu flujo:
-  // - Solo puedes ABRIR / REABRIR si la fecha es HOY
-  // - Cerrar bloquea POS (locked=1)
-  // - Reabrir HOY desbloquea POS (locked=0)
+  const [openReport, setOpenReport] = React.useState(false);
+  const [reportHtml, setReportHtml] = React.useState<string>("");
+
+
   const canOpenToday = today && (!cashbox || cashbox.status !== "Abierta") && !locked;
   const canReopenToday = today && (!cashbox || cashbox.status !== "Abierta") && locked;
   const canClose = !!cashbox && cashbox.status === "Abierta";
   const canOperate = !!cashbox && cashbox.status === "Abierta" && !locked;
+
+  const canPrintReport = !!cashbox && cashbox.status === "Cerrada";
+
+  // ✅ PRINT: ventana + HTML siempre en la MISMA ventana (no delegar a otra función que haga window.open)
+function handlePrintExistingOrBuild() {
+  if (!cashbox || cashbox.status !== "Cerrada") return;
+
+  try {
+    const report =
+      getCashboxReport(dateKey) ??
+      buildCashboxReport({
+        dateKey,
+        cashbox,
+        totals,
+        moves: allMoves,
+      });
+
+    saveCashboxReport(dateKey, report);
+    setHasSavedReport(true);
+
+    const html = printCashboxReport(report, { returnHtmlOnly: true }) as string;
+    setReportHtml(html);
+    setOpenReport(true);
+  } catch (e: any) {
+    console.error(e);
+    alert(e?.message ?? "Error generando reporte");
+  }
+}
+
 
   return (
     <div className="p-6">
@@ -162,11 +199,13 @@ export default function CajaDiariaPage() {
             {isOpen && cashbox?.openedAt ? (
               <span className="text-slate-400">— desde {new Date(cashbox.openedAt).toLocaleTimeString()}</span>
             ) : null}
+
+            {!isOpen && cashbox?.closedAt ? (
+              <span className="text-slate-400">— cerrada {new Date(cashbox.closedAt).toLocaleTimeString()}</span>
+            ) : null}
           </div>
 
-          {errorPayments ? (
-            <div className="mt-2 text-sm text-rose-700">{errorPayments}</div>
-          ) : null}
+          {errorPayments ? <div className="mt-2 text-sm text-rose-700">{errorPayments}</div> : null}
         </div>
 
         <div className="flex gap-2 items-center">
@@ -177,7 +216,7 @@ export default function CajaDiariaPage() {
             onChange={(e) => setDateKey(e.target.value)}
           />
 
-          {/* ✅ Botón principal: Abrir / Reabrir / Cerrar */}
+          {/* Abrir / Reabrir / Cerrar */}
           {isOpen ? (
             <button
               className="px-4 py-2 rounded-xl bg-slate-900 text-white disabled:opacity-50"
@@ -200,6 +239,16 @@ export default function CajaDiariaPage() {
               Abrir Caja
             </button>
           )}
+
+          {/* Reporte */}
+          <button
+            className="px-4 py-2 rounded-xl border disabled:opacity-50"
+            disabled={!canPrintReport}
+            onClick={handlePrintExistingOrBuild}
+            title={!canPrintReport ? "Solo disponible cuando la caja está cerrada" : ""}
+          >
+            {hasSavedReport ? "Ver Reporte" : "Generar Reporte"}
+          </button>
 
           <button className="px-4 py-2 rounded-xl border" onClick={refresh} disabled={loadingPayments}>
             {loadingPayments ? "Actualizando..." : "Refrescar"}
@@ -233,7 +282,7 @@ export default function CajaDiariaPage() {
         </button>
       </div>
 
-      {/* Movimientos (incluye Payment del POS + Manual) */}
+      {/* Movimientos */}
       <div className="mt-6 rounded-2xl border bg-white">
         <div className="p-4 border-b flex items-center justify-between">
           <div className="font-semibold">Movimientos</div>
@@ -342,7 +391,6 @@ export default function CajaDiariaPage() {
         open={openOpen}
         onClose={() => setOpenOpen(false)}
         onSubmit={(data) => {
-          // ✅ Solo hoy se puede abrir/reabrir
           if (!isTodayKey(dateKey)) {
             setOpenOpen(false);
             return;
@@ -350,7 +398,6 @@ export default function CajaDiariaPage() {
 
           openCashbox({ dateKey, openingAmount: data.openingAmount, openedBy: data.openedBy });
 
-          // ✅ Al abrir/reabrir: desbloquea POS
           setLocked(dateKey, false);
           emitCashboxChanged(dateKey);
 
@@ -398,16 +445,38 @@ export default function CajaDiariaPage() {
         totals={totals}
         onClose={() => setOpenClose(false)}
         onSubmit={(data) => {
-          closeCashbox({ dateKey, countedCash: data.countedCash, closedBy: data.closedBy, note: data.note });
+          const closed = closeCashbox({
+            dateKey,
+            countedCash: data.countedCash,
+            closedBy: data.closedBy,
+            note: data.note,
+          });
 
-          // ✅ Cerrar => bloquea POS del día (pero podrás reabrir HOY)
           setLocked(dateKey, true);
           emitCashboxChanged(dateKey);
 
+          const report = buildCashboxReport({ dateKey, cashbox: closed, totals, moves: allMoves });
+          saveCashboxReport(dateKey, report);
+          setHasSavedReport(true);
+
           setOpenClose(false);
           refresh();
+
+          if (data.printReport) {
+            const html = printCashboxReport(report, { returnHtmlOnly: true }) as string;
+            setReportHtml(html);
+            setOpenReport(true);
+          }
+
         }}
       />
+            <CashboxReportModal
+        open={openReport}
+        title={`${hasSavedReport ? "Reporte" : "Reporte"} • ${dateKey}`}
+        html={reportHtml}
+        onClose={() => setOpenReport(false)}
+      />
+
     </div>
   );
 }
