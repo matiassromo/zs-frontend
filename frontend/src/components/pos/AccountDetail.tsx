@@ -86,8 +86,21 @@ function norm(s: string) {
 
 function emitCashboxChanged(dateKey: string) {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent("zs:cashbox-changed", { detail: { dateKey } }));
+
+  // misma tab
+  window.dispatchEvent(
+    new CustomEvent("zs:cashbox-changed", { detail: { dateKey } })
+  );
+
+  // multi-tab / otras pantallas (reportes, dashboard)
+  try {
+    const bc = new BroadcastChannel("zs:bus");
+    bc.postMessage({ type: "cashbox-changed", dateKey });
+    bc.close();
+  } catch {}
 }
+
+
 
 /* ----------------- PARQUEADERO helpers ----------------- */
 const PARKING_RATE_PER_HOUR = 0.5; // $0.50 por hora

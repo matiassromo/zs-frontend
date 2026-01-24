@@ -17,6 +17,8 @@ import { toDateKey, todayDateKey } from "@/lib/apiv2/dateUtils";
 
 import { OpenCashDialog } from "@/components/cashbox/OpenCashDialog";
 import { CloseCashDialog } from "@/components/cashbox/CloseCashDialog";
+import { CashboxReportModal } from "@/components/cashbox/CashBoxReportModal";
+
 
 function money(n: number) {
   return `$${n.toFixed(2)}`;
@@ -39,6 +41,9 @@ export default function CajaDiariaPage() {
   const [openClose, setOpenClose] = React.useState(false);
 
   const [historyDates, setHistoryDates] = React.useState<string[]>([]);
+
+  // ✅ para evitar hydration mismatch: se setea SOLO en refresh() (cliente)
+  const [hasSavedReport, setHasSavedReport] = React.useState(false);
 
   const refresh = React.useCallback(async () => {
     setLoading(true);
@@ -148,6 +153,35 @@ export default function CajaDiariaPage() {
       alert(e?.message ?? "Error cerrando caja");
     }
   }
+
+  //const canPrintReport = !!cashbox && cashbox.status === "Cerrada";
+
+  // ✅ PRINT: ventana + HTML siempre en la MISMA ventana (no delegar a otra función que haga window.open)
+/*function handlePrintExistingOrBuild() {
+  if (!cashbox || cashbox.status !== "Cerrada") return;*/
+
+  /*try {
+    const report =
+      getCashboxReport(dateKey) ??
+      buildCashboxReport({
+        dateKey,
+        cashbox,
+        totals,
+        moves: allMoves,
+      });
+
+    saveCashboxReport(dateKey, report);
+    setHasSavedReport(true);
+
+    const html = printCashboxReport(report, { returnHtmlOnly: true }) as string;
+    setReportHtml(html);
+    setOpenReport(true);
+  } catch (e: any) {
+    console.error(e);
+    alert(e?.message ?? "Error generando reporte");
+  }
+}*/
+
 
   return (
     <div className="p-6">
@@ -275,6 +309,13 @@ export default function CajaDiariaPage() {
         onClose={() => setOpenClose(false)}
         onSubmit={handleClose}
       />
+           {/*<CashboxReportModal
+        open={openReport}
+        title={`${hasSavedReport ? "Reporte" : "Reporte"} • ${dateKey}`}
+        html={reportHtml}
+        onClose={() => setOpenReport(false)}
+      />*/}
+
     </div>
   );
 }

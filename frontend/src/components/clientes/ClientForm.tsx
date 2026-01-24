@@ -14,6 +14,7 @@ import { confirm, toast } from "@/lib/ui/swal";
 
 /* ----------------- VALIDACIONES ECUADOR: CÉDULA / RUC ----------------- */
 
+
 function isAllDigits(s: string) {
   return /^\d+$/.test(s);
 }
@@ -92,32 +93,56 @@ function validateNationalIdEC(value: string): { ok: boolean; msg?: string } {
 
 /* ----------------- SCHEMA ----------------- */
 
-const schema = z.object({
-  nationalId: z
-    .string()
-    .min(10, "Debe tener 10 (cédula) o 13 (RUC) dígitos")
-    .max(13, "Máx 13 dígitos")
-    .superRefine((val, ctx) => {
-      const r = validateNationalIdEC(val);
-      if (!r.ok) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: r.msg ?? "ID inválido",
-        });
+const schema = z
+  .object({
+    idType: z.enum(["cedula", "ruc", "pasaporte"]),
+    nationalId: z.string().min(1, "Identificación obligatoria"),
+    name: z.string().min(1, "Nombre obligatorio").max(50, "Máx 50 caracteres"),
+    email: z.string().email("Correo inválido"),
+    address: z.string().min(1, "Dirección obligatoria").max(300, "Máx 300 caracteres"),
+    number: z
+      .string()
+      .min(10, "Teléfono 10 dígitos")
+      .max(10, "Máx 10 dígitos")
+      .regex(/^\d+$/, "Solo números"),
+  })
+  .superRefine((data, ctx) => {
+    const v = (data.nationalId ?? "").trim();
+
+    if (data.idType === "cedula") {
+      if (!isAllDigits(v) || v.length !== 10) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["nationalId"], message: "Cédula: 10 dígitos" });
+        return;
       }
-    }),
-  name: z.string().min(1, "Nombre obligatorio").max(50, "Máx 50 caracteres"),
-  email: z.string().email("Correo inválido"),
-  address: z
-    .string()
-    .min(1, "Dirección obligatoria")
-    .max(300, "Máx 300 caracteres"),
-  number: z
-    .string()
-    .min(10, "Teléfono 10 dígitos")
-    .max(10, "Máx 10 dígitos")
-    .regex(/^\d+$/, "Solo números"),
-});
+      if (!validateCedulaEC(v)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["nationalId"], message: "Cédula inválida" });
+      }
+      return;
+    }
+
+    if (data.idType === "ruc") {
+      if (!isAllDigits(v) || v.length !== 13) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["nationalId"], message: "RUC: 13 dígitos" });
+        return;
+      }
+      if (!validateRucEC(v)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["nationalId"], message: "RUC inválido" });
+      }
+      return;
+    }
+
+    // pasaporte: alfanumérico, sin espacios, 6-20 (ajusta si quieres)
+    if (data.idType === "pasaporte") {
+      if (v.length < 6 || v.length > 20) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["nationalId"], message: "Pasaporte: 6 a 20 caracteres" });
+        return;
+      }
+      if (!/^[A-Za-z0-9]+$/.test(v)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["nationalId"], message: "Pasaporte: solo letras y números" });
+      }
+    }
+  });
+
 
 export type ClientFormValues = z.infer<typeof schema>;
 
@@ -136,10 +161,12 @@ export default function ClientForm({
     register,
     handleSubmit,
     reset,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm<ClientFormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
+      idType: "cedula",
       nationalId: "",
       name: "",
       email: "",
@@ -149,11 +176,30 @@ export default function ClientForm({
     },
   });
 
+  const idType = watch("idType");
+  
+
   const onSubmit = async (data: ClientFormValues) => {
     try {
       // Backend actual limita a 10, así que si ingresan RUC (13) guardamos base 10.
-      const nid = data.nationalId.trim();
-      const nationalIdForBackend = nid.length === 13 ? nid.slice(0, 10) : nid;
+    const nid = data.nationalId.trim();
+
+    let nationalIdForBackend = nid;
+
+    // si tu backend solo acepta 10, entonces:
+    // - cédula: 10 ok
+    // - ruc: guarda base 10
+    // - pasaporte: aquí NO hay forma si backend exige numérico/10 (tienes que ampliar backend)
+    if (data.idType === "ruc") nationalIdForBackend = nid.slice(0, 10);
+
+    // si backend no soporta pasaporte, decide:
+    // a) bloquear en UI con error, o
+    // b) permitir pero fallará.
+    // Recomendado: bloquear:
+    if (data.idType === "pasaporte") {
+      throw new Error("Backend aún no soporta pasaporte. Ajusta modelo/API para guardarlo.");
+    }
+
 
       const payload: ClientRequestDto = {
         ...data,
@@ -224,20 +270,40 @@ export default function ClientForm({
   <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
     <div className="grid gap-4 sm:grid-cols-2">
       {/* Cédula / RUC */}
-      <div>
-        <label className={labelCls}>Cédula / RUC</label>
+    <div>
+      <label className={labelCls}>Documento</label>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <select
+          className={inputCls}
+          {...register("idType")}
+        >
+          <option value="cedula">Cédula</option>
+          <option value="ruc">RUC</option>
+          <option value="pasaporte">Pasaporte</option>
+        </select>
+
+        <div className="sm:col-span-2">
         <input
           type="text"
-          inputMode="numeric"
-          maxLength={13}
           className={inputCls}
-          placeholder="1724567890 o 1724567890001"
+          inputMode={idType === "pasaporte" ? "text" : "numeric"}
+          maxLength={idType === "cedula" ? 10 : idType === "ruc" ? 13 : 20}
+          placeholder={
+            idType === "cedula"
+              ? "1724567890"
+              : idType === "ruc"
+              ? "1724567890001"
+              : "AB1234567"
+          }
           {...register("nationalId")}
         />
-        {errors.nationalId && (
-          <p className={errCls}>{errors.nationalId.message}</p>
-        )}
+        </div>
       </div>
+
+      {errors.nationalId && <p className={errCls}>{errors.nationalId.message}</p>}
+    </div>
+
 
       {/* Teléfono */}
       <div>

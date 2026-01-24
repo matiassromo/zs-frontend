@@ -24,6 +24,7 @@ const items: NavItem[] = [
     children: [
       { href: "/facturacion/pos", label: "Punto de Venta" },
       { href: "/facturacion/caja-diaria", label: "Caja Diaria" },
+      { href: "/facturacion/reportes/ventas", label: "Reporte de Ventas" }, // ✅ NUEVO
     ],
   },
   { type: "link", href: "/clientes", label: "Clientes" },
@@ -33,6 +34,7 @@ const items: NavItem[] = [
   { type: "link", href: "/llaves", label: "Lockers" },
 ];
 
+
 export default function Sidebar() {
   const pathname = usePathname();
   const { data } = useDashboard(8000);
@@ -41,6 +43,7 @@ export default function Sidebar() {
     () => pathname.startsWith("/facturacion") || pathname === "/pos",
     [pathname]
   );
+
 
   const [openFacturacion, setOpenFacturacion] = useState(false);
 
