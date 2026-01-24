@@ -7,7 +7,7 @@ export interface TransactionItemDto {
   createdAt: string;
   total: number;
   transactionType: string;
-  transactionId: string;
+  transactionId: string | null;
 }
 
 /**

@@ -7,6 +7,16 @@ export async function listKeys(): Promise<Key[]> {
   return (dtos ?? []).map(normalize);
 }
 
+export async function getKeyById(id: string): Promise<Key | null> {
+  try {
+    const dto = await http<any>(`/api/Keys/${id}`);
+    return dto ? normalize(dto) : null;
+  } catch (err: any) {
+    if (err?.status === 404) return null;
+    throw err;
+  }
+}
+
 export async function updateKey(id: string, input: KeyRequestDto): Promise<Key> {
   const payload = {
     Available: input.available,
@@ -41,15 +51,73 @@ function normalize(dto: any): Key {
 
   return {
     id: dto.id ?? dto.Id,
+    keyCode: dto.keyCode ?? dto.KeyCode ?? "",
     available: dto.available ?? dto.Available ?? false,
     notes: dto.notes ?? dto.Notes ?? null,
+    lastAssignedTo: dto.lastAssignedTo ?? dto.LastAssignedTo ?? null,
     lastAssignedClient:
       dto.lastAssignedClient?.name ??
       dto.LastAssignedClient?.name ??
       null,
-
-    lastAssignedAt: ensureTz(rawLastAssignedAt), // ✅
+    lastAssignedAt: ensureTz(rawLastAssignedAt),
+    transactionId: dto.transactionId ?? dto.TransactionId ?? null,
   };
 }
 
+/**
+ * Assigns a key to a visitor/client
+ */
+export async function assignKey(
+  id: string,
+  params: { visitorName: string; clientId?: string; notes?: string }
+): Promise<Key> {
+  return updateKey(id, {
+    available: false,
+    lastAssignedTo: params.clientId ?? null,
+    lastAssignedAt: new Date().toISOString(),
+    notes: params.notes ?? `Assigned to ${params.visitorName}`,
+  });
+}
 
+/**
+ * Releases a key (marks as available)
+ */
+export async function releaseKey(id: string): Promise<Key> {
+  return updateKey(id, {
+    available: true,
+    lastAssignedTo: null,
+    notes: null,
+  });
+}
+
+/**
+ * Lists all available keys
+ */
+export async function listAvailableKeys(): Promise<Key[]> {
+  const all = await listKeys();
+  return all.filter(k => k.available);
+}
+
+/**
+ * Lists keys by gender zone (H = first 16, M = rest)
+ */
+export async function listAvailableKeysByGender(gender: "H" | "M"): Promise<Key[]> {
+  const all = await listKeys();
+  const sorted = [...all].sort((a, b) => a.id.localeCompare(b.id));
+
+  return sorted.filter((k, index) => {
+    if (!k.available) return false;
+    const keyGender = index < 16 ? "H" : "M";
+    return keyGender === gender;
+  });
+}
+
+export default {
+  listKeys,
+  getKeyById,
+  updateKey,
+  assignKey,
+  releaseKey,
+  listAvailableKeys,
+  listAvailableKeysByGender,
+};

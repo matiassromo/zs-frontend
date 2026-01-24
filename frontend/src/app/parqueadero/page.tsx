@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import type { Parking, ParkingRequestDto } from "@/types/parking";
 
 import { listParkings, updateParking, deleteParking } from "@/lib/apiv2/parkings";
-import { getAccount } from "@/lib/api/accounts";
+import { getAccount } from "@/lib/apiv2/pos";
 
 /* ---------------- helpers fecha/hora ---------------- */
 

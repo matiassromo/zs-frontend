@@ -1,4 +1,4 @@
-import { Transaction, TransactionRequestDto } from "@/types/transaction";
+import { Transaction, TransactionRequestDto, TransactionStatus } from "@/types/transaction";
 import { http } from "./http";
 
 /**
@@ -7,7 +7,7 @@ import { http } from "./http";
  */
 export async function listTransactions(): Promise<Transaction[]> {
   const dtos = await http<any[]>(`/api/Transactions`);
-  return dtos.map(normalize);
+  return (dtos ?? []).map(normalize);
 }
 
 /**
@@ -62,6 +62,28 @@ export async function deleteTransaction(id: string): Promise<void> {
 }
 
 /**
+ * Closes an open transaction
+ * @param id - The UUID of the transaction to close
+ * @returns Promise<Transaction> The closed transaction
+ */
+export async function closeTransaction(id: string): Promise<Transaction> {
+  const dto = await http<any>(`/api/Transactions/${id}/close`, {
+    method: "POST",
+  });
+  return normalize(dto);
+}
+
+/**
+ * Lists all transactions for a specific cashbox
+ * @param cashBoxId - The UUID of the cashbox
+ * @returns Promise<Transaction[]> Array of transactions in the cashbox
+ */
+export async function listTransactionsByCashBox(cashBoxId: string): Promise<Transaction[]> {
+  const dtos = await http<any[]>(`/api/CashBoxes/${cashBoxId}/transactions`);
+  return (dtos ?? []).map(normalize);
+}
+
+/**
  * Normalizes backend DTO to frontend Transaction type
  * Handles both PascalCase (C# style) and camelCase property names
  * @param dto - Raw DTO from backend
@@ -69,12 +91,49 @@ export async function deleteTransaction(id: string): Promise<void> {
  */
 function normalize(dto: any): Transaction {
   return {
-    id: dto.id,
-    createdAt: dto.createdAt,
-    client: dto.client,
-    transactionItem: dto.transactionItem,
-    payment: dto.payment,
-  } as Transaction;
+    id: dto.id ?? dto.Id,
+    openedAt: dto.openedAt ?? dto.OpenedAt ?? dto.createdAt ?? dto.CreatedAt,
+    closedAt: dto.closedAt ?? dto.ClosedAt ?? null,
+    status: normalizeStatus(dto.status ?? dto.Status),
+    clientId: dto.clientId ?? dto.ClientId,
+    cashBoxId: dto.cashBoxId ?? dto.CashBoxId,
+    client: dto.client ?? dto.Client,
+    transactionItems: dto.transactionItems ?? dto.TransactionItems ?? [],
+    payments: dto.payments ?? dto.Payments ?? [],
+  };
+}
+
+/**
+ * Normalize status from backend (could be number or string)
+ */
+function normalizeStatus(status: any): TransactionStatus {
+  if (typeof status === "number") {
+    return status as TransactionStatus;
+  }
+  if (typeof status === "string") {
+    const lower = status.toLowerCase();
+    if (lower === "open" || lower === "abierta") return TransactionStatus.Open;
+    if (lower === "closed" || lower === "cerrada") return TransactionStatus.Closed;
+  }
+  return TransactionStatus.Open; // Default to Open
+}
+
+/**
+ * Lists all open transactions (status=Open)
+ * Used by POS to show today's active accounts
+ */
+export async function listOpenTransactions(): Promise<Transaction[]> {
+  const all = await listTransactions();
+  return all.filter(t => t.status === TransactionStatus.Open);
+}
+
+/**
+ * Lists transactions for today (by openedAt date)
+ */
+export async function listTodayTransactions(): Promise<Transaction[]> {
+  const all = await listTransactions();
+  const today = new Date().toISOString().slice(0, 10);
+  return all.filter(t => (t.openedAt ?? '').slice(0, 10) === today);
 }
 
 export default {
@@ -83,4 +142,8 @@ export default {
   createTransaction,
   updateTransaction,
   deleteTransaction,
+  closeTransaction,
+  listTransactionsByCashBox,
+  listOpenTransactions,
+  listTodayTransactions,
 };

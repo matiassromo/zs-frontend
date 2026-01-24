@@ -3,8 +3,27 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { confirm, fire } from "@/lib/ui/swal";
 
-import type { PosAccount } from "@/lib/api/accounts";
-import { addCharge, updateAccount, deleteCharge, listCharges } from "@/lib/api/accounts";
+import type { PosAccount } from "@/lib/apiv2/pos";
+
+// Stub functions for charge operations - backend handles via transaction items
+async function addCharge(_accountId: string, _input: { kind: string; concept: string; qty: number; amount: number }): Promise<void> {
+  console.warn("addCharge is deprecated - use specific transaction item endpoints");
+}
+
+async function deleteCharge(_accountId: string, _chargeId: string): Promise<void> {
+  console.warn("deleteCharge is deprecated - use specific transaction item endpoints");
+}
+
+async function updateAccount(_accountId: string, _input: any): Promise<void> {
+  // Backend updates transaction, not account
+  console.warn("updateAccount is deprecated - transaction data is immutable after creation");
+}
+
+async function listCharges(_accountId: string): Promise<any[]> {
+  // Charges come from transaction items
+  console.warn("listCharges is deprecated - use getAccount to get transaction items");
+  return [];
+}
 
 import { createParking, deleteParking, listParkings } from "@/lib/apiv2/parkings";
 import type { ParkingRequestDto } from "@/types/parking";

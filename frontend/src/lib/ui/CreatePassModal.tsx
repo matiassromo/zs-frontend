@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { createPass } from "@/lib/api/passes";
+import { createAccessCardForHolder } from "@/lib/apiv2/accessCards";
 
 export default function CreatePassModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void; }) {
   const [holderName, setHolder] = useState("");
@@ -9,7 +9,8 @@ export default function CreatePassModal({ onClose, onCreated }: { onClose: () =>
 
   async function save() {
     setSaving(true);
-    await createPass({ holderName, cardNumber });
+    // Note: cardNumber is not used in apiv2 - AccessCard only uses holderName
+    await createAccessCardForHolder(holderName.trim() || cardNumber, 10);
     onCreated();
   }
 

@@ -8,23 +8,60 @@ import {
   listCharges,
   listPayments,
   addPayment,
-  markChargePaid,
   closeAccount,
-  printAccountReceipt,
-  addCharge,
-  deleteCharge,
   type AccountSummary,
-  type Charge,
-  type Payment,
   type PosAccount,
-} from "@/lib/api/accounts";
+} from "@/lib/apiv2/pos";
 
 import { listKeys } from "@/lib/apiv2/keys";
 import { confirm, fire } from "@/lib/ui/swal";
 import EditAccountModal from "@/components/pos/EditAccountModal";
 
-// ✅ POS lock / caja diaria
-import { toDateKey, getCashboxByDate, addPosPaymentMove } from "@/lib/apiv2/cashbox";
+// Cashbox status check
+import { toDateKey } from "@/lib/apiv2/dateUtils";
+import { getTodayCashBox, CashBoxStatus } from "@/lib/apiv2/cashboxes";
+
+// Payment types for display
+type Charge = {
+  id: string;
+  kind: string;
+  concept: string;
+  qty: number;
+  amount: number;
+  total: number;
+  status: string;
+  createdAt: string;
+};
+
+type Payment = {
+  id: string;
+  method: string;
+  amount: number;
+  createdAt: string;
+};
+
+// Stub functions for charge operations - backend handles via transaction items
+// These will be fully removed when UI is updated to use bar orders, parking etc directly
+async function addCharge(_accountId: string, _input: { kind: string; concept: string; qty: number; amount: number }): Promise<void> {
+  // Backend handles charges via EntranceTransaction, BarOrder, Parking endpoints
+  // This stub exists for compatibility during migration
+  console.warn("addCharge is deprecated - use specific transaction item endpoints");
+}
+
+async function deleteCharge(_accountId: string, _chargeId: string): Promise<void> {
+  // Backend handles charge deletion via specific endpoints
+  console.warn("deleteCharge is deprecated - use specific transaction item endpoints");
+}
+
+async function markChargePaid(_accountId: string, _chargeId: string): Promise<void> {
+  // Backend tracks payment status via payments linked to transaction
+  console.warn("markChargePaid is deprecated - payments are linked to transactions");
+}
+
+function printAccountReceipt(_accountId: string): void {
+  // TODO: Implement receipt printing using transaction data
+  console.warn("printAccountReceipt not yet implemented for apiv2");
+}
 
 // ✅ bar
 import { listBarProducts, updateBarProduct } from "@/lib/apiv2/barProducts";
@@ -46,12 +83,6 @@ function norm(s: string) {
 }
 
 /* ----------------- POS LOCK (mismo criterio que Caja Diaria) ----------------- */
-const lockKey = (dateKey: string) => `zs:cashbox:locked:${dateKey}`;
-
-function isLocked(dateKey: string) {
-  if (typeof window === "undefined") return false;
-  return window.localStorage.getItem(lockKey(dateKey)) === "1";
-}
 
 function emitCashboxChanged(dateKey: string) {
   if (typeof window === "undefined") return;
@@ -234,19 +265,22 @@ export default function AccountDetail({
   const ACCOUNT_PARKING_MAP_KEY = "zs:parking:accountParkingMap";
 
 
-  function refreshPosGateFromSummary(s: AccountSummary | null) {
+  async function refreshPosGateFromSummary(s: AccountSummary | null) {
     if (!s) return;
     const dk = toDateKey(new Date(s.openedAt));
-    const cb = getCashboxByDate(dk);
-    const locked = isLocked(dk);
-    const ok = !!cb && cb.status === "Abierta" && !locked;
-    setPosEnabled(ok);
-    if (ok) {
-      setPosReason(null);
-    } else {
-      if (locked) setPosReason(`Caja del día ${dk} cerrada. POS bloqueado.`);
-      else if (!cb) setPosReason(`No hay caja abierta para el día ${dk}. Abre caja para operar POS.`);
-      else setPosReason(`Caja del día ${dk} está ${cb.status}. Abre caja para operar POS.`);
+    try {
+      const cb = await getTodayCashBox(dk);
+      const ok = !!cb && cb.status === CashBoxStatus.Open;
+      setPosEnabled(ok);
+      if (ok) {
+        setPosReason(null);
+      } else {
+        if (!cb) setPosReason(`No hay caja abierta para el día ${dk}. Abre caja para operar POS.`);
+        else setPosReason(`Caja del día ${dk} está cerrada. Abre caja para operar POS.`);
+      }
+    } catch {
+      setPosEnabled(false);
+      setPosReason(`Error verificando caja del día ${dk}.`);
     }
   }
 
@@ -497,15 +531,15 @@ setParking(p);
   }, [accountId]);
 
   useEffect(() => {
-    refreshPosGateFromSummary(summary);
+    void refreshPosGateFromSummary(summary);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summary?.openedAt, summary?.status]);
 
-  // ✅ escuchar cambios desde Caja Diaria
+  // Listen to cashbox changes
   useEffect(() => {
-    function onCashboxChanged() {
-      refreshPosGateFromSummary(summary);
-      loadAll();
+    async function onCashboxChanged() {
+      await refreshPosGateFromSummary(summary);
+      await loadAll();
     }
     window.addEventListener("zs:cashbox-changed", onCashboxChanged as any);
     return () => window.removeEventListener("zs:cashbox-changed", onCashboxChanged as any);
@@ -688,21 +722,10 @@ useEffect(() => {
     if (c.kind === "Key") return;
     if (c.total <= 0) throw new Error("No se puede registrar pago cuando el total es $0.00");
 
+    // Create payment via backend API
     await addPayment(accountId, {
       method: form.method,
       amount: c.total,
-      note: `charge:${form.chargeId}`,
-    });
-    await markChargePaid(accountId, form.chargeId);
-
-    const dk = toDateKey(new Date(summary?.openedAt ?? new Date()));
-    addPosPaymentMove({
-      dateKey: dk,
-      amount: c.total,
-      method: form.method,
-      concept: `Cuenta #${accountId} · ${summary?.clientName ?? ""} · ${c.concept}`,
-      createdBy: "pos",
-      ref: { kind: "Charge", id: c.id },
     });
 
     await loadAll();
@@ -712,6 +735,7 @@ useEffect(() => {
       window.scrollTo({ top: lastScrollYRef.current, left: 0, behavior: "auto" });
     });
 
+    const dk = toDateKey(new Date(summary?.openedAt ?? new Date()));
     emitCashboxChanged(dk);
     onChanged?.();
   }

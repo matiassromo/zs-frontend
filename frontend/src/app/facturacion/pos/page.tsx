@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import CreateAccountModal from "@/components/pos/CreateAccountModal";
 import AccountDetail from "@/components/pos/AccountDetail";
 
-import { listAccountsToday, getAccount, type PosAccount, type AccountSummary } from "@/lib/api/accounts";
+import { listAccountsToday, getAccount, type PosAccount, type AccountSummary } from "@/lib/apiv2/pos";
 
 export default function PosPage() {
   const [openCreate, setOpenCreate] = useState(false);

@@ -1,6 +1,6 @@
 // src/hooks/useDashboard.ts
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getDashboardSnapshot, type DashboardSnapshot } from "@/lib/api/dashboard";
+import { getDashboardSnapshot, type DashboardSnapshot } from "@/lib/apiv2/dashboard";
 import { onDashboardInvalidate } from "@/lib/events/bus";
 
 export function useDashboard(pollMs = 10000) {

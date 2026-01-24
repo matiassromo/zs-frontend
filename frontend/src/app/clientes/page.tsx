@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { Client } from "@/types/client";
-import { listClients, deleteClient } from "@/lib/api/clients";
+import { listClients, deleteClient } from "@/lib/apiv2/clients";
 import Swal from "sweetalert2";
 import "sweetalert2/dist/sweetalert2.min.css";
 
